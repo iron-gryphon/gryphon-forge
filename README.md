@@ -23,7 +23,9 @@ This project expects a `foundry_output.json` or access to the Terraform remote s
 ## 📂 Repository Structure
 ```text
 .
-├── inventory/          # Environment definitions (sandbox, prod)
+├── inventory/
+│   ├── hosts.yml       # Host inventory
+│   └── group_vars/     # Cluster configuration
 ├── roles/
 │   ├── ignition/       # Wraps openshift-install to create configs
 │   ├── aws_nodes/      # Provisions EC2, ELB, and Route53
@@ -42,32 +44,82 @@ This project expects a `foundry_output.json` or access to the Terraform remote s
 The Forge requires the specific versions of the OpenShift installer and CLI that match your target OCP version. Ensure these are in your `$PATH`.
 * `openshift-install`
 * `oc`
-* `ansible` (with `amazon.aws` and `kubernetes.core` collections)
+* `ansible` (with `amazon.aws`, `community.aws`, and `kubernetes.core` collections)
 
-### 2. Configure Environment Variables
-Update your inventory or `group_vars` with the metadata provided by the `gryphon-foundry` outputs:
+Install the required Ansible collections:
+
+```bash
+ansible-galaxy collection install -r requirements.yml
+```
+
+### 2. Configure variables
+Update `inventory/group_vars/all.yml` with the metadata provided by the `gryphon-foundry` outputs and required credentials:
+
 ```yaml
-# inventory/group_vars/all.yml
+# Foundry outputs (from gryphon-foundry)
 foundry_vpc_id: "vpc-0abc123..."
 foundry_private_subnets: ["subnet-111", "subnet-222", "subnet-333"]
+foundry_bastion_security_group_id: "sg-xxxxxxxx"
+foundry_internal_hosted_zone_id: "Zxxxxxxxx"
+foundry_region: "us-east-1"
+
+# Cluster configuration
 cluster_name: "iron-vault-01"
 base_domain: "fsi.internal"
 worker_count: 3
 gpu_worker_count: 1
+
+# Required for EC2 provisioning
+ec2_key_name: "your-aws-key-pair-name"
+rhcos_ami_id: "ami-xxxxxxxx"  # Get from OpenShift release metadata for your region
 ```
+
+**Pull secret** — Required for OpenShift to pull container images from Red Hat registries. Retrieve it from:
+
+1. Go to [Red Hat OpenShift Installer-Provisioned Infrastructure (AWS)](https://console.redhat.com/openshift/install/aws/installer-provisioned)
+2. Log in with your Red Hat account
+3. Click **Download pull secret** to get a JSON file
+4. Save it to `~/.openshift/pull-secret`:
+   ```bash
+   mkdir -p ~/.openshift
+   # Paste the downloaded JSON content into the file
+   # Or, if you downloaded a file: mv ~/Downloads/pull-secret ~/.openshift/pull-secret
+   ```
+5. Alternatively, set `PULL_SECRET_PATH` to point to your pull secret file:
+   ```bash
+   export PULL_SECRET_PATH=/path/to/your/pull-secret
+   ```
+
+**SSH key** — Ensure your SSH public key is at `~/.ssh/id_rsa.pub` (or set `SSH_PUBLIC_KEY_PATH`).
 
 ### 3. Run the Forge
-Execute the main deployment playbook. This process will orchestrate ignition generation, infrastructure provisioning in AWS, and the automated monitoring of the bootstrap process.
+
+**Full deployment** — ignition generation, EC2 provisioning, load balancers, Route53, CSR approval, and validation:
 
 ```bash
-# Execute the full deployment lifecycle
-ansible-playbook -i inventory/sandbox playbooks/deploy_cluster.yml
+ansible-playbook playbooks/deploy_cluster.yml
 ```
 
-To run specific stages of the forge (e.g., just approving CSRs or just provisioning EC2), you can use tags:
+**Run specific stages** using tags:
 
 ```bash
-ansible-playbook -i inventory/sandbox playbooks/deploy_cluster.yml --tags "csr_approval"
+# Ignition only
+ansible-playbook playbooks/deploy_cluster.yml --tags "ignition"
+
+# EC2 provisioning only
+ansible-playbook playbooks/deploy_cluster.yml --tags "ec2"
+
+# CSR approval and bootstrap wait
+ansible-playbook playbooks/deploy_cluster.yml --tags "csr_approval"
+
+# Validation only
+ansible-playbook playbooks/deploy_cluster.yml --tags "validation"
+```
+
+**Destroy the cluster**:
+
+```bash
+ansible-playbook playbooks/destroy_cluster.yml
 ```
 
 ## 🛠️ Post-Installation & Integration

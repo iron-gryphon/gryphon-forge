@@ -1,0 +1,111 @@
+---
+# Security groups for OpenShift UPI nodes in the Vault
+
+- name: Create bootstrap security group
+  amazon.aws.ec2_security_group:
+    name: "{{ cluster_name }}-bootstrap-sg"
+    description: "Bootstrap node for {{ cluster_name }}"
+    vpc_id: "{{ foundry_vpc_id }}"
+    state: present
+    rules:
+      - proto: tcp
+        from_port: 22
+        to_port: 22
+        cidr_ip: "10.0.0.0/8"
+        rule_desc: "SSH from VPC"
+      - proto: tcp
+        from_port: 6443
+        to_port: 6443
+        group_id: "{{ foundry_bastion_security_group_id }}"
+        rule_desc: "API from bastion"
+      - proto: tcp
+        from_port: 22623
+        to_port: 22623
+        group_id: "{{ foundry_bastion_security_group_id }}"
+        rule_desc: "MCS from bastion"
+    tags:
+      Name: "{{ cluster_name }}-bootstrap-sg"
+      cluster: "{{ cluster_name }}"
+  register: bootstrap_sg
+  tags:
+    - aws_nodes
+    - security_groups
+
+- name: Create master security group
+  amazon.aws.ec2_security_group:
+    name: "{{ cluster_name }}-master-sg"
+    description: "Control plane nodes for {{ cluster_name }}"
+    vpc_id: "{{ foundry_vpc_id }}"
+    state: present
+    rules:
+      - proto: tcp
+        from_port: 22
+        to_port: 22
+        cidr_ip: "10.0.0.0/8"
+        rule_desc: "SSH from VPC"
+      - proto: tcp
+        from_port: 6443
+        to_port: 6443
+        cidr_ip: "10.0.0.0/8"
+        rule_desc: "API from VPC"
+      - proto: tcp
+        from_port: 2379
+        to_port: 2380
+        cidr_ip: "10.0.0.0/8"
+        rule_desc: "etcd"
+      - proto: tcp
+        from_port: 10250
+        to_port: 10250
+        cidr_ip: "10.0.0.0/8"
+        rule_desc: "Kubelet"
+      - proto: tcp
+        from_port: 22623
+        to_port: 22623
+        cidr_ip: "10.0.0.0/8"
+        rule_desc: "MCS"
+    tags:
+      Name: "{{ cluster_name }}-master-sg"
+      cluster: "{{ cluster_name }}"
+  register: master_sg
+  tags:
+    - aws_nodes
+    - security_groups
+
+- name: Create worker security group
+  amazon.aws.ec2_security_group:
+    name: "{{ cluster_name }}-worker-sg"
+    description: "Worker nodes for {{ cluster_name }}"
+    vpc_id: "{{ foundry_vpc_id }}"
+    state: present
+    rules:
+      - proto: tcp
+        from_port: 22
+        to_port: 22
+        cidr_ip: "10.0.0.0/8"
+        rule_desc: "SSH from VPC"
+      - proto: tcp
+        from_port: 10250
+        to_port: 10250
+        cidr_ip: "10.0.0.0/8"
+        rule_desc: "Kubelet"
+      - proto: tcp
+        from_port: 30000
+        to_port: 32767
+        cidr_ip: "10.0.0.0/8"
+        rule_desc: "NodePort services"
+    tags:
+      Name: "{{ cluster_name }}-worker-sg"
+      cluster: "{{ cluster_name }}"
+  register: worker_sg
+  tags:
+    - aws_nodes
+    - security_groups
+
+- name: Set security group IDs as facts
+  ansible.builtin.set_fact:
+    bootstrap_sg_id: "{{ bootstrap_sg.group_id }}"
+    master_sg_id: "{{ master_sg.group_id }}"
+    worker_sg_id: "{{ worker_sg.group_id }}"
+  tags:
+    - aws_nodes
+    - security_groups

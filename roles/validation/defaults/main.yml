@@ -1,0 +1,4 @@
+---
+# Validation role defaults
+
+validation_operators_timeout: 600

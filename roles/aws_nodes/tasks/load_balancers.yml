@@ -1,0 +1,136 @@
+---
+# Internal NLBs for OpenShift API (6443) and MCS (22623)
+# ALB for Ingress (443/80) - workers register via router after bootstrap
+
+- name: Create NLB target group for API (6443)
+  community.aws.elb_target_group:
+    name: "{{ cluster_name }}-api-tg"
+    protocol: TCP
+    port: 6443
+    vpc_id: "{{ foundry_vpc_id }}"
+    target_type: instance
+    state: present
+  register: api_tg
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Create NLB for API
+  community.aws.elb_network_lb:
+    name: "{{ cluster_name }}-api"
+    subnets: "{{ foundry_private_subnets }}"
+    scheme: internal
+    listeners:
+      - Protocol: TCP
+        Port: 6443
+        DefaultActions:
+          - Type: forward
+            TargetGroupArn: "{{ api_tg.target_group_arn }}"
+    state: present
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Create NLB target group for MCS (22623)
+  community.aws.elb_target_group:
+    name: "{{ cluster_name }}-mcs-tg"
+    protocol: TCP
+    port: 22623
+    vpc_id: "{{ foundry_vpc_id }}"
+    target_type: instance
+    state: present
+  register: mcs_tg
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Create NLB for Machine Config Server
+  community.aws.elb_network_lb:
+    name: "{{ cluster_name }}-mcs"
+    subnets: "{{ foundry_private_subnets }}"
+    scheme: internal
+    listeners:
+      - Protocol: TCP
+        Port: 22623
+        DefaultActions:
+          - Type: forward
+            TargetGroupArn: "{{ mcs_tg.target_group_arn }}"
+    state: present
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Create target groups for Ingress (443, 80)
+  community.aws.elb_target_group:
+    name: "{{ cluster_name }}-ingress-{{ item }}-tg"
+    protocol: TCP
+    port: "{{ item }}"
+    vpc_id: "{{ foundry_vpc_id }}"
+    target_type: instance
+    state: present
+  loop:
+    - 443
+    - 80
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Create internal ALB for Ingress
+  amazon.aws.elb_application_lb:
+    name: "{{ cluster_name }}-ingress"
+    subnets: "{{ foundry_private_subnets }}"
+    scheme: internal
+    listeners:
+      - Protocol: HTTPS
+        Port: 443
+        DefaultActions:
+          - Type: forward
+            TargetGroupName: "{{ cluster_name }}-ingress-443-tg"
+      - Protocol: HTTP
+        Port: 80
+        DefaultActions:
+          - Type: forward
+            TargetGroupName: "{{ cluster_name }}-ingress-80-tg"
+    state: present
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Get bootstrap and master instance IDs for target registration
+  amazon.aws.ec2_instance_info:
+    filters:
+      "tag:cluster": "{{ cluster_name }}"
+      "tag:role": "{{ item }}"
+      "instance-state-name": "running"
+    region: "{{ foundry_region }}"
+  register: lb_target_instances
+  loop:
+    - bootstrap
+    - master
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Register bootstrap and masters to API target group
+  community.aws.elb_target:
+    target_group_arn: "{{ api_tg.target_group_arn }}"
+    target_id: "{{ item }}"
+    target_port: 6443
+    state: present
+  loop: "{{ lb_target_instances.results | map(attribute='instances') | flatten | map(attribute='instance_id') | list | unique }}"
+  when: (lb_target_instances.results | map(attribute='instances') | flatten | length) > 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Register bootstrap to MCS target group
+  community.aws.elb_target:
+    target_group_arn: "{{ mcs_tg.target_group_arn }}"
+    target_id: "{{ lb_target_instances.results[0].instances[0].instance_id }}"
+    target_port: 22623
+    state: present
+  when:
+    - lb_target_instances.results[0].instances | default([]) | length > 0
+  tags:
+    - aws_nodes
+    - load_balancers

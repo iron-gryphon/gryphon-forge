@@ -1,0 +1,26 @@
+---
+# AWS Nodes role - Provision EC2, ELB, Route53 for OpenShift UPI
+
+- name: Include security groups tasks
+  ansible.builtin.include_tasks: security_groups.yml
+  tags:
+    - aws_nodes
+    - security_groups
+
+- name: Include EC2 instances tasks
+  ansible.builtin.include_tasks: ec2_instances.yml
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Include load balancers tasks
+  ansible.builtin.include_tasks: load_balancers.yml
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Include Route53 tasks
+  ansible.builtin.include_tasks: route53.yml
+  tags:
+    - aws_nodes
+    - route53

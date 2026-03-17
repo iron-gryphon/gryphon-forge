@@ -1,0 +1,5 @@
+---
+# CSR Approver role defaults
+
+csr_approval_timeout: 3600
+csr_check_interval: 30

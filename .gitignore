@@ -1,0 +1,30 @@
+# Foundry outputs - contains VPC IDs, subnet IDs, security groups, etc.
+foundry_output.json
+
+# OpenShift installer outputs - contains pull secrets, kubeconfig, ignition configs
+installer/
+
+# Ansible
+*.retry
+.ansible/
+
+# Secrets and credentials
+pull-secret
+*.pem
+.env
+.env.*
+.vault_pass
+.vault_pass.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Editor and OS
+.DS_Store
+*.swp
+*.swo
+*~

@@ -1,0 +1,53 @@
+---
+# CSR Approver - Watch and approve Kubelet CSRs during bootstrap
+# Run after bootstrap node is up; approves CSRs so masters/workers can join
+
+- name: Wait for bootstrap completion
+  ansible.builtin.command:
+    cmd: openshift-install wait-for bootstrap-complete --dir={{ install_dir }} --log-level=info
+  register: bootstrap_wait
+  changed_when: false
+  failed_when: false
+  tags:
+    - csr_approval
+
+- name: Fail if bootstrap did not complete
+  ansible.builtin.fail:
+    msg: "Bootstrap did not complete. Check bootstrap node and API connectivity."
+  when: bootstrap_wait.rc != 0
+  tags:
+    - csr_approval
+
+- name: Create CSR approval and wait script
+  ansible.builtin.copy:
+    dest: "{{ install_dir }}/approve-and-wait.sh"
+    content: |
+      #!/bin/bash
+      set -e
+      export KUBECONFIG="{{ install_dir }}/auth/kubeconfig"
+      INSTALL_DIR="{{ install_dir }}"
+      INTERVAL={{ csr_check_interval }}
+
+      # Run install-complete in background; while waiting, approve CSRs
+      (
+        openshift-install wait-for install-complete --dir="$INSTALL_DIR" --log-level=info
+      ) &
+      WAIT_PID=$!
+
+      while kill -0 $WAIT_PID 2>/dev/null; do
+        for csr in $(oc get csr -o jsonpath='{.items[?(@.status.conditions==null)].metadata.name}' 2>/dev/null); do
+          oc adm certificate approve "$csr" 2>/dev/null && echo "Approved $csr"
+        done
+        sleep $INTERVAL
+      done
+
+      wait $WAIT_PID
+    mode: "0755"
+  tags:
+    - csr_approval
+
+- name: Run CSR approval and wait for install complete
+  ansible.builtin.command:
+    cmd: "{{ install_dir }}/approve-and-wait.sh"
+  tags:
+    - csr_approval
