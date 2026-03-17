@@ -5,7 +5,7 @@
 - name: Wait for bootstrap completion
   ansible.builtin.command:
     cmd: openshift-install wait-for bootstrap-complete --dir={{ install_dir }} --log-level=info
-  register: bootstrap_wait
+  register: csr_approver_bootstrap_wait
   changed_when: false
   failed_when: false
   tags:
@@ -14,7 +14,7 @@
 - name: Fail if bootstrap did not complete
   ansible.builtin.fail:
     msg: "Bootstrap did not complete. Check bootstrap node and API connectivity."
-  when: bootstrap_wait.rc != 0
+  when: csr_approver_bootstrap_wait.rc != 0
   tags:
     - csr_approval
 
@@ -26,7 +26,7 @@
       set -e
       export KUBECONFIG="{{ install_dir }}/auth/kubeconfig"
       INSTALL_DIR="{{ install_dir }}"
-      INTERVAL={{ csr_check_interval }}
+      INTERVAL={{ csr_approver_csr_check_interval }}
 
       # Run install-complete in background; while waiting, approve CSRs
       (

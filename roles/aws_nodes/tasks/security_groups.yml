@@ -26,7 +26,7 @@
     tags:
       Name: "{{ cluster_name }}-bootstrap-sg"
       cluster: "{{ cluster_name }}"
-  register: bootstrap_sg
+  register: aws_nodes_bootstrap_sg
   tags:
     - aws_nodes
     - security_groups
@@ -66,7 +66,7 @@
     tags:
       Name: "{{ cluster_name }}-master-sg"
       cluster: "{{ cluster_name }}"
-  register: master_sg
+  register: aws_nodes_master_sg
   tags:
     - aws_nodes
     - security_groups
@@ -96,16 +96,16 @@
     tags:
       Name: "{{ cluster_name }}-worker-sg"
       cluster: "{{ cluster_name }}"
-  register: worker_sg
+  register: aws_nodes_worker_sg
   tags:
     - aws_nodes
     - security_groups
 
 - name: Set security group IDs as facts
   ansible.builtin.set_fact:
-    bootstrap_sg_id: "{{ bootstrap_sg.group_id }}"
-    master_sg_id: "{{ master_sg.group_id }}"
-    worker_sg_id: "{{ worker_sg.group_id }}"
+    aws_nodes_bootstrap_sg_id: "{{ aws_nodes_bootstrap_sg.group_id }}"
+    aws_nodes_master_sg_id: "{{ aws_nodes_master_sg.group_id }}"
+    aws_nodes_worker_sg_id: "{{ aws_nodes_worker_sg.group_id }}"
   tags:
     - aws_nodes
     - security_groups
