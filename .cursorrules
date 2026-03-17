@@ -1,0 +1,42 @@
+# Gryphon Forge — Cursor Rules
+
+## Project Context
+
+gryphon-forge deploys Red Hat OpenShift (OCP) via User-Provisioned Infrastructure (UPI) using Ansible. It consumes gryphon-foundry outputs and transitions from an empty VPC to a functional cluster.
+
+## Ansible Conventions
+
+- Use FQCN for modules (e.g., `ansible.builtin.copy`, not `copy`).
+- All roles must be idempotent; tasks should be safe to run multiple times.
+- Use `ansible-lint` before committing; fix reported issues.
+- Prefer `include_vars` and `set_fact` for configuration; keep secrets out of playbooks.
+- Use `tags` on tasks for targeted runs (ignition, ec2, csr_approval, validation).
+
+## File Layout
+
+- `inventory/group_vars/all.yml` — Main config (foundry outputs, cluster metadata, node counts).
+- `roles/<name>/` — Each role has `tasks/main.yml`, `defaults/main.yml`, and `README.md`.
+- Playbooks live in `playbooks/`; main entry is `deploy_cluster.yml`.
+
+## Key Variables
+
+- `foundry_*` — From gryphon-foundry (vpc_id, private_subnets, bastion_sg, hosted_zone, region).
+- `cluster_name`, `base_domain`, `ocp_version` — Cluster identity.
+- `*_count`, `*_instance_type` — Node sizing (master, worker, gpu_worker).
+- `install_dir`, `foundry_output_path`, `pull_secret_path`, `ssh_public_key_path`.
+
+## Immutable Infrastructure
+
+OCP nodes (RHCOS) are immutable. Do not add Ansible tasks that modify node OS directly. Use MachineConfigs or cluster operators for node-level changes.
+
+## AWS & OpenShift
+
+- EC2 provisioning uses `amazon.aws` and `community.aws` collections.
+- Ignition generation uses `openshift-install` (must be in PATH).
+- Route53 records use `foundry_internal_hosted_zone_id` for internal DNS.
+
+## When Editing
+
+- Adding roles: Create `roles/<name>/` with tasks, defaults, and README.
+- Changing config: Prefer `inventory/group_vars/all.yml` or role `defaults/main.yml`.
+- New playbook tags: Add to the role block in `deploy_cluster.yml`.
