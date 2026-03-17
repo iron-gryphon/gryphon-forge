@@ -10,7 +10,7 @@
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
     state: present
-  register: api_tg
+  register: aws_nodes_api_tg
   tags:
     - aws_nodes
     - load_balancers
@@ -25,7 +25,7 @@
         Port: 6443
         DefaultActions:
           - Type: forward
-            TargetGroupArn: "{{ api_tg.target_group_arn }}"
+            TargetGroupArn: "{{ aws_nodes_api_tg.target_group_arn }}"
     state: present
   tags:
     - aws_nodes
@@ -39,7 +39,7 @@
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
     state: present
-  register: mcs_tg
+  register: aws_nodes_mcs_tg
   tags:
     - aws_nodes
     - load_balancers
@@ -54,7 +54,7 @@
         Port: 22623
         DefaultActions:
           - Type: forward
-            TargetGroupArn: "{{ mcs_tg.target_group_arn }}"
+            TargetGroupArn: "{{ aws_nodes_mcs_tg.target_group_arn }}"
     state: present
   tags:
     - aws_nodes
@@ -103,7 +103,7 @@
       "tag:role": "{{ item }}"
       "instance-state-name": "running"
     region: "{{ foundry_region }}"
-  register: lb_target_instances
+  register: aws_nodes_lb_target_instances
   loop:
     - bootstrap
     - master
@@ -113,24 +113,24 @@
 
 - name: Register bootstrap and masters to API target group
   community.aws.elb_target:
-    target_group_arn: "{{ api_tg.target_group_arn }}"
+    target_group_arn: "{{ aws_nodes_api_tg.target_group_arn }}"
     target_id: "{{ item }}"
     target_port: 6443
     state: present
-  loop: "{{ lb_target_instances.results | map(attribute='instances') | flatten | map(attribute='instance_id') | list | unique }}"
-  when: (lb_target_instances.results | map(attribute='instances') | flatten | length) > 0
+  loop: "{{ aws_nodes_lb_target_instances.results | map(attribute='instances') | flatten | map(attribute='instance_id') | list | unique }}"
+  when: (aws_nodes_lb_target_instances.results | map(attribute='instances') | flatten | length) > 0
   tags:
     - aws_nodes
     - load_balancers
 
 - name: Register bootstrap to MCS target group
   community.aws.elb_target:
-    target_group_arn: "{{ mcs_tg.target_group_arn }}"
-    target_id: "{{ lb_target_instances.results[0].instances[0].instance_id }}"
+    target_group_arn: "{{ aws_nodes_mcs_tg.target_group_arn }}"
+    target_id: "{{ aws_nodes_lb_target_instances.results[0].instances[0].instance_id }}"
     target_port: 22623
     state: present
   when:
-    - lb_target_instances.results[0].instances | default([]) | length > 0
+    - aws_nodes_lb_target_instances.results[0].instances | default([]) | length > 0
   tags:
     - aws_nodes
     - load_balancers
