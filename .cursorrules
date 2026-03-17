@@ -9,6 +9,7 @@ gryphon-forge deploys Red Hat OpenShift (OCP) via User-Provisioned Infrastructur
 - Use FQCN for modules (e.g., `ansible.builtin.copy`, not `copy`).
 - All roles must be idempotent; tasks should be safe to run multiple times.
 - Use `ansible-lint` before committing; fix reported issues.
+- Run validation commands before committing (see AGENTS.md "Validation & Testing").
 - Prefer `include_vars` and `set_fact` for configuration; keep secrets out of playbooks.
 - Use `tags` on tasks for targeted runs (ignition, ec2, csr_approval, validation).
 
@@ -40,3 +41,5 @@ OCP nodes (RHCOS) are immutable. Do not add Ansible tasks that modify node OS di
 - Adding roles: Create `roles/<name>/` with tasks, defaults, and README.
 - Changing config: Prefer `inventory/group_vars/all.yml` or role `defaults/main.yml`.
 - New playbook tags: Add to the role block in `deploy_cluster.yml`.
+- New playbooks: Add them to the syntax-check step in `.github/workflows/ansible-validation.yml`.
+- Validation changes: Run `ansible-playbook <playbook> --syntax-check` and `ansible-lint` locally; update workflow or `.ansible-lint` if validation logic changes.

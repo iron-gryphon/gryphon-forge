@@ -1,0 +1,4 @@
+# CI validation dependencies (ansible-lint, ansible)
+# Used by .github/workflows/ansible-validation.yml
+ansible>=8.0.0
+ansible-lint>=8.0.0

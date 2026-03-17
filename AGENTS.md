@@ -50,6 +50,31 @@ ansible-playbook playbooks/deploy_cluster.yml --tags "csr_approval"  # CSR appro
 ansible-playbook playbooks/deploy_cluster.yml --tags "validation"    # Validation only
 ```
 
+## Validation & Testing
+
+**Before committing changes**, run these validation commands locally (they mirror the GitHub Actions workflow):
+
+```bash
+# 1. Install collections (if not already done)
+ansible-galaxy collection install -r requirements.yml
+
+# 2. Syntax check all playbooks
+ansible-playbook playbooks/deploy_cluster.yml --syntax-check
+ansible-playbook playbooks/destroy_cluster.yml --syntax-check
+
+# 3. Run ansible-lint
+ansible-lint
+```
+
+**After making changes**, agents must:
+
+1. **Run validation** — Execute the commands above to ensure changes pass.
+2. **Fix reported issues** — Address any `ansible-lint` or syntax errors before considering the task complete.
+3. **Update tests when needed** — If you add roles, playbooks, or change structure:
+   - Add new playbooks to the syntax-check loop in `.github/workflows/ansible-validation.yml`.
+   - Adjust `.ansible-lint` exclusions or profile if new patterns require it.
+   - Update this section if validation commands change.
+
 ## Conventions for Agents
 
 1. **Idempotency:** All roles must be idempotent. Tasks should be safe to run multiple times.
@@ -57,6 +82,7 @@ ansible-playbook playbooks/deploy_cluster.yml --tags "validation"    # Validatio
 3. **State awareness:** Keep Ansible inventory in sync with physical AWS resources.
 4. **Linting:** Use `ansible-lint` for playbooks and roles.
 5. **Modularity:** Add new roles under `roles/` with a `README.md` and `defaults/main.yml`.
+6. **Validation:** Run validation commands (syntax check, ansible-lint) before committing; update the workflow and this guide when adding playbooks or changing validation logic.
 
 ## Foundry Integration
 

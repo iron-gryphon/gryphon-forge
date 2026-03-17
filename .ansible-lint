@@ -1,0 +1,5 @@
+---
+# ansible-lint configuration for gryphon-forge
+profile: moderate
+exclude_paths:
+  - .git

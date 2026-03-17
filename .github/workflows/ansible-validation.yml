@@ -1,0 +1,41 @@
+---
+# Ansible validation workflow
+# Runs syntax checks and ansible-lint on playbooks and roles
+
+name: Ansible Validation
+
+on:
+  push:
+    branches: [main, master, dev]
+  pull_request:
+    branches: [main, master, dev]
+
+jobs:
+  validate:
+    name: Lint & Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Ansible and ansible-lint
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: Ansible syntax check
+        run: |
+          for playbook in playbooks/*.yml; do
+            ansible-playbook "$playbook" --syntax-check
+          done
+
+      - name: Run ansible-lint
+        run: ansible-lint

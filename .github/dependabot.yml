@@ -1,0 +1,16 @@
+---
+# Dependabot configuration
+# Note: Ansible Galaxy (requirements.yml) is not supported by Dependabot.
+# For collection updates, consider Renovate (https://docs.renovatebot.com/modules/manager/ansible-galaxy/).
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
