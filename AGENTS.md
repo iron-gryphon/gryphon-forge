@@ -64,7 +64,13 @@ This project expects `foundry_output.json` (or Terraform remote state) with:
 
 - `vault_vpc_id`, `private_subnet_ids`, `bastion_security_group_id`, `internal_hosted_zone_id`, `region`
 
-Variables are overridden in the first play of `deploy_cluster.yml` when the file exists.
+**Preferred:** Pass via `-e @foundry_output.json` to avoid modifying `inventory/group_vars/all.yml`:
+
+```bash
+ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json
+```
+
+Variables are overridden in the first play of `deploy_cluster.yml` from: 1) `include_vars` (if file at `foundry_output_path` exists), 2) `-e @foundry_output.json`, 3) `all.yml` defaults.
 
 ## Common Tasks
 

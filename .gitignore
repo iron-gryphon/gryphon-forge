@@ -1,6 +1,9 @@
 # Foundry outputs - contains VPC IDs, subnet IDs, security groups, etc.
 foundry_output.json
 
+# Local overrides - use -e @local_vars.yml for env-specific values without editing all.yml
+local_vars.yml
+
 # OpenShift installer outputs - contains pull secrets, kubeconfig, ignition configs
 installer/
 

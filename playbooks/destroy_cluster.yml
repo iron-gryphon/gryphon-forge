@@ -21,13 +21,13 @@
       tags:
         - always
 
+    # Foundry vars come from: 1) include_vars (foundry.*), 2) -e @foundry_output.json, 3) all.yml
     - name: Override with foundry outputs
       ansible.builtin.set_fact:
-        foundry_vpc_id: "{{ foundry.vault_vpc_id | default(foundry_vpc_id) }}"
-        foundry_private_subnets: "{{ foundry.private_subnet_ids | default(foundry_private_subnets) }}"
-        foundry_internal_hosted_zone_id: "{{ foundry.internal_hosted_zone_id | default(foundry_internal_hosted_zone_id) }}"
-        foundry_region: "{{ foundry.region | default(foundry_region) }}"
-      when: foundry is defined
+        foundry_vpc_id: "{{ (foundry | default({})).vault_vpc_id | default(vault_vpc_id | default(foundry_vpc_id)) }}"
+        foundry_private_subnets: "{{ (foundry | default({})).private_subnet_ids | default(private_subnet_ids | default(foundry_private_subnets)) }}"
+        foundry_internal_hosted_zone_id: "{{ (foundry | default({})).internal_hosted_zone_id | default(internal_hosted_zone_id | default(foundry_internal_hosted_zone_id)) }}"
+        foundry_region: "{{ (foundry | default({})).region | default(region | default(foundry_region)) }}"
       tags:
         - always
 

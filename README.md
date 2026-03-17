@@ -53,26 +53,24 @@ ansible-galaxy collection install -r requirements.yml
 ```
 
 ### 2. Configure variables
-Update `inventory/group_vars/all.yml` with the metadata provided by the `gryphon-foundry` outputs and required credentials:
 
-```yaml
-# Foundry outputs (from gryphon-foundry)
-foundry_vpc_id: "vpc-0abc123..."
-foundry_private_subnets: ["subnet-111", "subnet-222", "subnet-333"]
-foundry_bastion_security_group_id: "sg-xxxxxxxx"
-foundry_internal_hosted_zone_id: "Zxxxxxxxx"
-foundry_region: "us-east-1"
+**Recommended: Use `foundry_output.json` without modifying `all.yml`**
 
-# Cluster configuration
-cluster_name: "iron-vault-01"
-base_domain: "fsi.internal"
-worker_count: 3
-gpu_worker_count: 1
+Pass foundry outputs via `-e` so you never risk pushing environment-specific values to Git:
 
-# Required for EC2 provisioning
-ec2_key_name: "your-aws-key-pair-name"
-rhcos_ami_id: "ami-xxxxxxxx"  # Get from OpenShift release metadata for your region
+```bash
+ansible-playbook playbooks/deploy_cluster.yml -e @../foundry_output.json
 ```
+
+Or, if `foundry_output.json` is at the default path (`../foundry_output.json` relative to the playbook), it is auto-loaded. You can also override the path:
+
+```bash
+ansible-playbook playbooks/deploy_cluster.yml -e foundry_output_path=/path/to/foundry_output.json
+```
+
+**Optional: Override cluster config in `inventory/group_vars/all.yml`**
+
+Only edit `all.yml` for values not in foundry output (cluster name, node counts, instance types, paths). Foundry outputs (`vault_vpc_id`, `private_subnet_ids`, etc.) should come from `foundry_output.json` or `-e`.
 
 **Pull secret** — Required for OpenShift to pull container images from Red Hat registries. Retrieve it from:
 
@@ -95,6 +93,12 @@ rhcos_ami_id: "ami-xxxxxxxx"  # Get from OpenShift release metadata for your reg
 ### 3. Run the Forge
 
 **Full deployment** — ignition generation, EC2 provisioning, load balancers, Route53, CSR approval, and validation:
+
+```bash
+ansible-playbook playbooks/deploy_cluster.yml -e @../foundry_output.json
+```
+
+Or, if `foundry_output.json` exists at the default path, simply:
 
 ```bash
 ansible-playbook playbooks/deploy_cluster.yml

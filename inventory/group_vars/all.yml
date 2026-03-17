@@ -1,13 +1,19 @@
 ---
 # Gryphon Forge - Global variables
-# Override these with foundry_output.json or Terraform remote state from gryphon-foundry
+#
+# Foundry outputs (vpc, subnets, sg, hosted zone, region) MUST come from one of:
+#   1. foundry_output.json at foundry_output_path (auto-loaded if present)
+#   2. -e @foundry_output.json (recommended: no edits to this file)
+#   3. -e foundry_output_path=/path/to/foundry_output.json
+#
+# Example: ansible-playbook playbooks/deploy_cluster.yml -e @../foundry_output.json
 
-# --- Foundry Outputs (from gryphon-foundry) ---
-foundry_vpc_id: "vpc-xxxxxxxx"
+# --- Foundry Outputs (defaults; override via foundry_output.json or -e) ---
+foundry_vpc_id: ""
 foundry_private_subnets: []
-foundry_bastion_security_group_id: "sg-xxxxxxxx"
-foundry_internal_hosted_zone_id: "Zxxxxxxxx"
-foundry_region: "us-east-1"
+foundry_bastion_security_group_id: ""
+foundry_internal_hosted_zone_id: ""
+foundry_region: ""
 
 # --- Cluster Configuration ---
 cluster_name: "iron-vault-01"
