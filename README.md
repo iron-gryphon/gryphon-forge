@@ -140,6 +140,17 @@ After the Forge completes the bootstrap sequence, the cluster will be reachable 
 
 ---
 
+## 📢 Slack Notifications (Optional)
+
+The `.github/workflows/slack-notify.yml` workflow notifies Slack when:
+
+- **Branch updates (merges/pushes)** – Commits pushed or merged to `main`, `master`, or `dev`
+- **Dependabot PRs** – A new dependency update PR is opened
+
+Uses Slack Workflow Builder (webhook trigger). Requires `SLACK_WEBHOOK_URL` repository secret. See gryphon-foundry's [SETUP.md](../gryphon-foundry/SETUP.md#slack-notifications-optional) for setup instructions. Payload uses `event_type: main_update` (branch updates) and `event_type: dependabot_pr` (Dependabot PRs).
+
+---
+
 ## 🤝 Contributing
 The **Iron Gryphon** ecosystem thrives on community intelligence. If you are contributing to the Forge:
 * **Maintain Idempotency:** Ensure that every task can be run multiple times without causing errors or unexpected state changes.
