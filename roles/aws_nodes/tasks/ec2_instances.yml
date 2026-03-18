@@ -17,7 +17,7 @@
 - name: Read bootstrap ignition
   ansible.builtin.slurp:
     src: "{{ install_dir }}/bootstrap.ign"
-  register: bootstrap_ign
+  register: aws_nodes_bootstrap_ign
   tags:
     - aws_nodes
     - ec2
@@ -31,14 +31,14 @@
     network:
       assign_public_ip: false
       subnets: "{{ foundry_private_subnets[0] }}"
-    security_group: "{{ bootstrap_sg_id }}"
-    user_data: "{{ bootstrap_ign.content | b64decode }}"
+    security_group: "{{ aws_nodes_bootstrap_sg_id }}"
+    user_data: "{{ aws_nodes_bootstrap_ign.content | b64decode }}"
     tags:
       Name: "{{ cluster_name }}-bootstrap"
       cluster: "{{ cluster_name }}"
       role: bootstrap
     state: present
-  register: bootstrap_instance
+  register: aws_nodes_bootstrap_instance
   tags:
     - aws_nodes
     - ec2
@@ -46,7 +46,7 @@
 - name: Read master ignition
   ansible.builtin.slurp:
     src: "{{ install_dir }}/master.ign"
-  register: master_ign
+  register: aws_nodes_master_ign
   tags:
     - aws_nodes
     - ec2
@@ -60,8 +60,8 @@
     network:
       assign_public_ip: false
       subnets: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
-    security_group: "{{ master_sg_id }}"
-    user_data: "{{ master_ign.content | b64decode }}"
+    security_group: "{{ aws_nodes_master_sg_id }}"
+    user_data: "{{ aws_nodes_master_ign.content | b64decode }}"
     tags:
       Name: "{{ cluster_name }}-master-{{ item }}"
       cluster: "{{ cluster_name }}"
@@ -75,7 +75,7 @@
 - name: Read worker ignition
   ansible.builtin.slurp:
     src: "{{ install_dir }}/worker.ign"
-  register: worker_ign
+  register: aws_nodes_worker_ign
   tags:
     - aws_nodes
     - ec2
@@ -89,8 +89,8 @@
     network:
       assign_public_ip: false
       subnets: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
-    security_group: "{{ worker_sg_id }}"
-    user_data: "{{ worker_ign.content | b64decode }}"
+    security_group: "{{ aws_nodes_worker_sg_id }}"
+    user_data: "{{ aws_nodes_worker_ign.content | b64decode }}"
     tags:
       Name: "{{ cluster_name }}-worker-{{ item }}"
       cluster: "{{ cluster_name }}"
@@ -110,8 +110,8 @@
     network:
       assign_public_ip: false
       subnets: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
-    security_group: "{{ worker_sg_id }}"
-    user_data: "{{ worker_ign.content | b64decode }}"
+    security_group: "{{ aws_nodes_worker_sg_id }}"
+    user_data: "{{ aws_nodes_worker_ign.content | b64decode }}"
     tags:
       Name: "{{ cluster_name }}-gpu-worker-{{ item }}"
       cluster: "{{ cluster_name }}"
