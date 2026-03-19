@@ -13,17 +13,18 @@ publish: Internal
 pullSecret: '{{ ignition_pull_secret_data }}'
 sshKey: |
   {{ ignition_ssh_key_data }}
-{% if mirror_registry_url | default('') | length > 0 %}
+{% if ignition_mirror_registry_url_resolved | default('') | length > 0 %}
 imageContentSources:
 - mirrors:
-  - {{ mirror_registry_url | trim }}/{{ mirror_registry_release_path | default('openshift/release') }}
+  - {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}
   source: quay.io/openshift-release-dev/ocp-release
 - mirrors:
-  - {{ mirror_registry_url | trim }}/{{ mirror_registry_release_path | default('openshift/release') }}
+  - {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}
   source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
-{% if mirror_registry_additional_trust_bundle | default('') | length > 0 %}
+{% set _trust_bundle = (mirror_registry_additional_trust_bundle['value'] if (mirror_registry_additional_trust_bundle is mapping and (mirror_registry_additional_trust_bundle | default({})).get('value') is defined) else (mirror_registry_additional_trust_bundle | default(''))) | trim %}
+{% if _trust_bundle | length > 0 %}
 additionalTrustBundle: |
-{{ mirror_registry_additional_trust_bundle | trim | indent(2) }}
+{{ _trust_bundle | indent(2) }}
 {% endif %}
 {% endif %}
 controlPlane:

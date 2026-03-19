@@ -22,6 +22,16 @@
     - ignition
     - config
 
+# Unwrap Terraform output format ({sensitive, type, value}) when passed via -e @foundry_output.json
+- name: Resolve mirror_registry_url (unwrap Terraform output format)
+  ansible.builtin.set_fact:
+    ignition_mirror_registry_url_resolved: >-
+      {{ (mirror_registry_url['value'] if (mirror_registry_url is mapping
+         and (mirror_registry_url | default({})).get('value') is defined)
+         else (mirror_registry_url | default(''))) | trim }}
+  tags:
+    - ignition
+
 - name: Resolve pull secret path
   ansible.builtin.set_fact:
     ignition_pull_secret_resolved: "{{ pull_secret_path | expanduser }}"
@@ -117,12 +127,12 @@
       spec:
         repositoryDigestMirrors:
         - mirrors:
-          - {{ mirror_registry_url | trim }}/{{ mirror_registry_release_path | default('openshift/release') }}
+          - {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}
           source: quay.io/openshift-release-dev/ocp-release
         - mirrors:
-          - {{ mirror_registry_url | trim }}/{{ mirror_registry_release_path | default('openshift/release') }}
+          - {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}
           source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
-  when: mirror_registry_url | default('') | length > 0
+  when: ignition_mirror_registry_url_resolved | default('') | length > 0
   tags:
     - ignition
 
