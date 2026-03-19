@@ -82,7 +82,16 @@
       tags:
         - always
 
-    # Unwrap Terraform output format for ocp_base_domain when passed via -e @foundry_output.json
+    # Unwrap Terraform output format when passed via -e @foundry_output.json
+    - name: Normalize mirror_registry_url when in Terraform output format
+      ansible.builtin.set_fact:
+        mirror_registry_url: "{{ mirror_registry_url['value'] }}"
+      when:
+        - mirror_registry_url is mapping
+        - (mirror_registry_url | default({})).get('value') is defined
+      tags:
+        - always
+
     - name: Normalize ocp_base_domain when in Terraform output format
       ansible.builtin.set_fact:
         foundry_base_domain: "{{ foundry_base_domain['value'] }}"
