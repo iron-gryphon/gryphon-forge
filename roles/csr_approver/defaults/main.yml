@@ -8,4 +8,6 @@ csr_approver_openshift_install_cmd: openshift-install
 csr_approver_oc_cmd: oc
 csr_approver_csr_approval_timeout: 3600
 csr_approver_csr_check_interval: 30
-csr_approver_connectivity_timeout: 15  # Seconds to wait for API DNS/port before bootstrap wait
+csr_approver_connectivity_timeout: 300  # Seconds to wait for API DNS/port (bootstrap node can take 3-5 min to start)
+csr_approver_gather_on_failure: true  # When bootstrap fails, gather logs and fetch to controller for review
+# csr_approver_gather_failure_dest: override to set custom path; default is playbook_dir/bootstrap-failure-logs/<cluster>-<epoch>

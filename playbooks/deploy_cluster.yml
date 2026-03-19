@@ -204,6 +204,18 @@
         - config
         - ignition
 
+    - name: Validate foundry_nest_vpc_cidr when bastion is used
+      ansible.builtin.assert:
+        that: foundry_nest_vpc_cidr | default('') | length > 0
+        fail_msg: >-
+          foundry_nest_vpc_cidr is required when using bastion for API access. The bootstrap security group
+          must allow port 6443 from the Nest VPC (where the bastion runs) for openshift-install to reach the API.
+          Ensure gryphon-foundry outputs nest_vpc_cidr and pass via: -e @foundry_output.json
+      when: foundry_bastion_host is defined and foundry_bastion_host | length > 0
+      tags:
+        - config
+        - ignition
+
 - name: Ignition Generation - Fetch pull secrets and generate ignition files
   hosts: local
   gather_facts: true

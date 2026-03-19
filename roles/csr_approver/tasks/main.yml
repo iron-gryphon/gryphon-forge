@@ -43,17 +43,132 @@
 - name: Wait for bootstrap completion
   ansible.builtin.command:
     cmd: "{{ csr_approver_openshift_install_cmd }} wait-for bootstrap-complete --dir={{ csr_approver_install_dir }} --log-level=info"
+  args:
+    chdir: "{{ csr_approver_install_dir }}"
   register: csr_approver_bootstrap_wait
   changed_when: false
   failed_when: false
   tags:
     - csr_approval
 
+- name: Gather bootstrap logs on failure
+  tags:
+    - csr_approval
+  when:
+    - csr_approver_bootstrap_wait.rc != 0
+    - csr_approver_gather_on_failure | default(true) | bool
+  block:
+    - name: Set bootstrap failure logs destination
+      ansible.builtin.set_fact:
+        csr_approver_gather_dest: "{{
+          csr_approver_gather_failure_dest
+          | default(playbook_dir ~ '/bootstrap-failure-logs/' ~ cluster_name ~ '-' ~ (ansible_date_time.epoch | string))
+        }}"
+      tags:
+        - csr_approval
+
+    - name: Run openshift-install gather bootstrap
+      ansible.builtin.command:
+        cmd: "{{ csr_approver_openshift_install_cmd }} gather bootstrap --dir={{ csr_approver_install_dir }} --log-level=info"
+      args:
+        chdir: "{{ csr_approver_install_dir }}"
+      register: csr_approver_gather_bootstrap
+      changed_when: false
+      failed_when: false
+      tags:
+        - csr_approval
+
+    - name: Ensure bootstrap failure logs directory exists on controller
+      ansible.builtin.file:
+        path: "{{ csr_approver_gather_dest }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+      tags:
+        - csr_approval
+
+    - name: Fetch .openshift_install.log from bastion to controller
+      ansible.builtin.fetch:
+        src: "{{ csr_approver_install_dir }}/.openshift_install.log"
+        dest: "{{ csr_approver_gather_dest }}/"
+        flat: true
+      ignore_errors: true
+      when: inventory_hostname == 'bastion'
+      tags:
+        - csr_approval
+
+    - name: Find gather bootstrap output on bastion
+      ansible.builtin.find:
+        paths: "{{ csr_approver_install_dir }}"
+        patterns: "log-bundle-*"
+        file_type: any
+      register: csr_approver_gather_output
+      when: inventory_hostname == 'bastion'
+      tags:
+        - csr_approval
+
+    - name: Fetch gather bootstrap log bundle to controller
+      ansible.builtin.fetch:
+        src: "{{ item.path }}"
+        dest: "{{ csr_approver_gather_dest }}/"
+        flat: true
+      loop: "{{ csr_approver_gather_output.files | default([]) }}"
+      when:
+        - inventory_hostname == 'bastion'
+        - csr_approver_gather_output.files | default([]) | length > 0
+      tags:
+        - csr_approval
+
+    - name: Copy .openshift_install.log to failure dir when running locally
+      ansible.builtin.copy:
+        src: "{{ csr_approver_install_dir }}/.openshift_install.log"
+        dest: "{{ csr_approver_gather_dest }}/.openshift_install.log"
+        remote_src: true
+      ignore_errors: true
+      when: inventory_hostname != 'bastion'
+      delegate_to: localhost
+      run_once: true
+      tags:
+        - csr_approval
+
+    - name: Find gather bootstrap output when running locally
+      ansible.builtin.find:
+        paths: "{{ csr_approver_install_dir }}"
+        patterns: "log-bundle-*"
+        file_type: any
+      register: csr_approver_gather_local
+      when: inventory_hostname != 'bastion'
+      tags:
+        - csr_approval
+
+    - name: Copy gather log bundle to failure dir when running locally
+      ansible.builtin.copy:
+        src: "{{ item.path }}"
+        dest: "{{ csr_approver_gather_dest }}/"
+        remote_src: true
+      loop: "{{ csr_approver_gather_local.files | default([]) }}"
+      when:
+        - inventory_hostname != 'bastion'
+        - csr_approver_gather_local.files | default([]) | length > 0
+      delegate_to: localhost
+      run_once: true
+      tags:
+        - csr_approval
+
 - name: Fail if bootstrap did not complete
   ansible.builtin.fail:
     msg: >-
       Bootstrap did not complete. Check bootstrap node and API connectivity.
       Ensure api-int.{{ cluster_name }}.{{ base_domain }} resolves and port 6443 is reachable from bastion.
+      {% if csr_approver_gather_on_failure | default(true) | bool and csr_approver_gather_dest is defined %}
+      Logs gathered to: {{ csr_approver_gather_dest }}
+      {% endif %}
+      Troubleshooting:
+      1) Verify foundry_nest_vpc_cidr is set (bootstrap SG must allow 6443 from Nest for bastion).
+      2) Check NLB target health: AWS Console → EC2 → Target Groups → {{ cluster_name }}-api-tg.
+      3) Gather bootstrap logs: openshift-install gather bootstrap --dir={{ csr_approver_install_dir }} --log-level=info
+      4) From bastion, test: nc -zv {{ api_int_dns_name }} 6443
       openshift-install stdout: {{ csr_approver_bootstrap_wait.stdout | default('(none)') }}
       openshift-install stderr: {{ csr_approver_bootstrap_wait.stderr | default('(none)') }}
   when: csr_approver_bootstrap_wait.rc != 0

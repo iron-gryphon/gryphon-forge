@@ -9,7 +9,9 @@ Watches for pending Certificate Signing Requests (CSRs) from Kubelet during Open
 | `kubeconfig_path` | Path to admin kubeconfig | `{{ install_dir }}/auth/kubeconfig` |
 | `csr_approval_timeout` | Max seconds to wait for cluster ready | 3600 |
 | `csr_check_interval` | Seconds between CSR checks | 30 |
-| `csr_approver_connectivity_timeout` | Seconds to wait for API DNS/port before bootstrap wait | 15 |
+| `csr_approver_connectivity_timeout` | Seconds to wait for API DNS/port before bootstrap wait | 300 |
+| `csr_approver_gather_on_failure` | When bootstrap fails, gather logs and fetch to controller | true |
+| `csr_approver_gather_failure_dest` | Override path for gathered logs; default `playbook_dir/bootstrap-failure-logs/<cluster>-<epoch>` | (none) |
 
 ## Connectivity validation
 
@@ -19,6 +21,8 @@ Before waiting for bootstrap completion, the role validates:
 2. **TCP connectivity** — Port 6443 must be reachable within `csr_approver_connectivity_timeout` seconds.
 
 If either check fails, the role fails with a clear message instead of blocking on `openshift-install wait-for bootstrap-complete`.
+
+When bootstrap fails and `csr_approver_gather_on_failure` is true, the role runs `openshift-install gather bootstrap` and fetches `.openshift_install.log` plus the log bundle from bastion to the controller at `playbook_dir/bootstrap-failure-logs/<cluster>-<epoch>/` for review.
 
 ## Prerequisites
 
