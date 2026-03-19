@@ -61,6 +61,9 @@
         foundry_vault_vpc_cidr: >-
           {{ (((foundry | default({})).vault_vpc_cidr | default(vault_vpc_cidr)) | default({}))['value']
           | default((foundry | default({})).vault_vpc_cidr | default(vault_vpc_cidr) | default(foundry_vault_vpc_cidr) | default('10.1.0.0/16')) }}
+        foundry_nest_vpc_cidr: >-
+          {{ (((foundry | default({})).nest_vpc_cidr | default(nest_vpc_cidr)) | default({}))['value']
+          | default((foundry | default({})).nest_vpc_cidr | default(nest_vpc_cidr) | default(foundry_nest_vpc_cidr) | default('')) }}
         foundry_bastion_host: >-
           {{ (((foundry | default({})).bastion_public_ip | default(bastion_public_ip)) | default({}))['value']
           | default((((foundry | default({})).bastion_public_dns | default(bastion_public_dns)) | default({}))['value'])
@@ -125,6 +128,15 @@
       when:
         - rhcos_ami_id is mapping
         - (rhcos_ami_id | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Normalize foundry_nest_vpc_cidr when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_nest_vpc_cidr: "{{ foundry_nest_vpc_cidr['value'] }}"
+      when:
+        - foundry_nest_vpc_cidr is mapping
+        - (foundry_nest_vpc_cidr | default({})).get('value') is defined
       tags:
         - always
 

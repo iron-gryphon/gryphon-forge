@@ -54,6 +54,26 @@
           if foundry_bastion_security_group_id | default('') | length > 0
           else []
         )
+        + (
+          [
+            {
+              'proto': 'tcp',
+              'from_port': 6443,
+              'to_port': 6443,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'API from Nest (bastion via peering)'
+            },
+            {
+              'proto': 'tcp',
+              'from_port': 22623,
+              'to_port': 22623,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'MCS from Nest (bastion via peering)'
+            }
+          ]
+          if foundry_nest_vpc_cidr | default('') | length > 0
+          else []
+        )
       }}
     tags:
       Name: "{{ cluster_name }}-bootstrap-sg"

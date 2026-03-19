@@ -2,6 +2,44 @@
 # CSR Approver - Watch and approve Kubelet CSRs during bootstrap
 # Run after bootstrap node is up; approves CSRs so masters/workers can join
 
+# --- Connectivity validation (fail fast before long bootstrap wait) ---
+- name: Validate API DNS resolution
+  ansible.builtin.shell: |
+    if getent hosts "{{ api_int_dns_name }}" >/dev/null 2>&1; then
+      echo "Resolved: $(getent hosts '{{ api_int_dns_name }}')"
+    else
+      echo "DNS lookup failed for {{ api_int_dns_name }}"
+      echo "Ensure Route53 private zone is associated with this host's VPC."
+      exit 1
+    fi
+  args:
+    executable: /bin/bash
+  register: csr_approver_dns_check
+  changed_when: false
+  tags:
+    - csr_approval
+
+- name: Validate API port 6443 reachable
+  ansible.builtin.wait_for:
+    host: "{{ api_int_dns_name }}"
+    port: 6443
+    timeout: "{{ csr_approver_connectivity_timeout }}"
+    state: started
+  failed_when: false
+  register: csr_approver_port_check
+  tags:
+    - csr_approval
+
+- name: Fail if API port 6443 not reachable
+  ansible.builtin.fail:
+    msg: >-
+      Cannot reach {{ api_int_dns_name }}:6443 from this host within {{ csr_approver_connectivity_timeout }}s.
+      Check: 1) Bootstrap node running, 2) Security groups allow API (6443) from bastion/Nest VPC,
+      3) VPC peering routes. Run: nc -zv {{ api_int_dns_name }} 6443
+  when: csr_approver_port_check is failed
+  tags:
+    - csr_approval
+
 - name: Wait for bootstrap completion
   ansible.builtin.command:
     cmd: "{{ csr_approver_openshift_install_cmd }} wait-for bootstrap-complete --dir={{ csr_approver_install_dir }} --log-level=info"
