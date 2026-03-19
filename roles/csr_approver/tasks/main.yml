@@ -62,7 +62,7 @@
       ansible.builtin.set_fact:
         csr_approver_gather_dest: "{{
           csr_approver_gather_failure_dest
-          | default(playbook_dir ~ '/bootstrap-failure-logs/' ~ cluster_name ~ '-' ~ (ansible_date_time.epoch | string))
+          | default(playbook_dir ~ '/bootstrap-failure-logs/' ~ cluster_name ~ '-' ~ (ansible_facts['ansible_date_time']['epoch'] | string))
         }}"
       tags:
         - csr_approval
@@ -85,6 +85,76 @@
         mode: "0755"
       delegate_to: localhost
       run_once: true
+      tags:
+        - csr_approval
+
+    - name: Inspect API target group health in AWS
+      community.aws.elb_target_group_info:
+        names:
+          - "{{ cluster_name }}-api-tg"
+        collect_targets_health: true
+        region: "{{ foundry_region | default(region) }}"
+      register: csr_approver_api_tg_info
+      delegate_to: localhost
+      run_once: true
+      ignore_errors: true
+      tags:
+        - csr_approval
+
+    - name: Inspect bootstrap instance in AWS
+      amazon.aws.ec2_instance_info:
+        filters:
+          "tag:cluster": "{{ cluster_name }}"
+          "tag:role": "bootstrap"
+        region: "{{ foundry_region | default(region) }}"
+      register: csr_approver_bootstrap_instance_info
+      delegate_to: localhost
+      run_once: true
+      ignore_errors: true
+      tags:
+        - csr_approval
+
+    - name: Write AWS inspection report to failure logs
+      ansible.builtin.copy:
+        dest: "{{ csr_approver_gather_dest }}/aws-inspection-report.txt"
+        content: |
+          === API Target Group ({{ cluster_name }}-api-tg) ===
+          {% if csr_approver_api_tg_info is failed %}
+          Failed to retrieve: {{ csr_approver_api_tg_info.msg | default('unknown error') }}
+          {% elif csr_approver_api_tg_info.target_groups | default([]) | length == 0 %}
+          No target group found.
+          {% else %}
+          {% for tg in csr_approver_api_tg_info.target_groups %}
+          ARN: {{ tg.target_group_arn }}
+          Targets health:
+          {% for th in tg.targets_health_description | default([]) %}
+            - {{ th.target.id | default('N/A') }}:{{ th.target.port | default(6443) }}
+              {{ th.target_health.state | default('unknown') }}
+              {% if th.target_health.reason | default('') %}({{ th.target_health.reason }}){% endif %}
+          {% endfor %}
+          {% if (tg.targets_health_description | default([]) | length) == 0 %}
+          (no targets registered)
+          {% endif %}
+          {% endfor %}
+          {% endif %}
+
+          === Bootstrap Instance ===
+          {% if csr_approver_bootstrap_instance_info is failed %}
+          Failed to retrieve: {{ csr_approver_bootstrap_instance_info.msg | default('unknown error') }}
+          {% elif csr_approver_bootstrap_instance_info.instances | default([]) | length == 0 %}
+          No bootstrap instance found.
+          {% else %}
+          {% for inst in csr_approver_bootstrap_instance_info.instances %}
+          Instance ID: {{ inst.instance_id }}
+          State: {{ inst.state.name | default(inst.state | default('N/A')) }}
+          Private IP: {{ inst.private_ip_address | default('N/A') }}
+          Subnet: {{ inst.subnet_id | default('N/A') }}
+          {% endfor %}
+          {% endif %}
+        mode: "0644"
+      delegate_to: localhost
+      run_once: true
+      when: csr_approver_gather_dest is defined
       tags:
         - csr_approval
 
@@ -166,7 +236,7 @@
       {% endif %}
       Troubleshooting:
       1) Verify foundry_nest_vpc_cidr is set (bootstrap SG must allow 6443 from Nest for bastion).
-      2) Check NLB target health: AWS Console → EC2 → Target Groups → {{ cluster_name }}-api-tg.
+      2) Check NLB target health: see aws-inspection-report.txt in logs dir, or AWS Console → EC2 → Target Groups → {{ cluster_name }}-api-tg.
       3) Gather bootstrap logs: openshift-install gather bootstrap --dir={{ csr_approver_install_dir }} --log-level=info
       4) From bastion, test: nc -zv {{ api_int_dns_name }} 6443
       openshift-install stdout: {{ csr_approver_bootstrap_wait.stdout | default('(none)') }}

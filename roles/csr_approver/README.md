@@ -22,7 +22,10 @@ Before waiting for bootstrap completion, the role validates:
 
 If either check fails, the role fails with a clear message instead of blocking on `openshift-install wait-for bootstrap-complete`.
 
-When bootstrap fails and `csr_approver_gather_on_failure` is true, the role runs `openshift-install gather bootstrap` and fetches `.openshift_install.log` plus the log bundle from bastion to the controller at `playbook_dir/bootstrap-failure-logs/<cluster>-<epoch>/` for review.
+When bootstrap fails and `csr_approver_gather_on_failure` is true, the role:
+
+1. Runs `openshift-install gather bootstrap` and fetches `.openshift_install.log` plus the log bundle from bastion to the controller at `playbook_dir/bootstrap-failure-logs/<cluster>-<epoch>/`
+2. Inspects the API target group (`<cluster>-api-tg`) and bootstrap instance in AWS, writing `aws-inspection-report.txt` with target health status and instance state for troubleshooting
 
 ## Prerequisites
 
