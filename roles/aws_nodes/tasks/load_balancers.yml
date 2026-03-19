@@ -1,6 +1,6 @@
 ---
-# Internal NLBs for OpenShift API (6443) and MCS (22623)
-# ALB for Ingress (443/80) - workers register via router after bootstrap
+# Internal NLBs for OpenShift API (6443), MCS (22623)
+# Ingress: ALB (HTTPS) when foundry provides ACM cert; else NLB (TCP passthrough)
 
 - name: Create NLB target group for API (6443)
   community.aws.elb_target_group:
@@ -27,6 +27,7 @@
           - Type: forward
             TargetGroupArn: "{{ aws_nodes_api_tg.target_group_arn }}"
     state: present
+  register: aws_nodes_api_nlb
   tags:
     - aws_nodes
     - load_balancers
@@ -60,17 +61,17 @@
     - aws_nodes
     - load_balancers
 
-- name: Create target groups for Ingress (443, 80)
+# --- Ingress: ALB (when ACM cert from foundry) or NLB (TCP passthrough) ---
+- name: Create ALB target group for Ingress (HTTP 80)
   community.aws.elb_target_group:
-    name: "{{ cluster_name }}-ingress-{{ item }}-tg"
-    protocol: TCP
-    port: "{{ item }}"
+    name: "{{ cluster_name }}-ingress-80-tg"
+    protocol: HTTP
+    port: 80
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
     state: present
-  loop:
-    - 443
-    - 80
+  register: aws_nodes_ingress_80_tg
+  when: foundry_ingress_certificate_arn | default('') | length > 0
   tags:
     - aws_nodes
     - load_balancers
@@ -79,19 +80,76 @@
   amazon.aws.elb_application_lb:
     name: "{{ cluster_name }}-ingress"
     subnets: "{{ foundry_private_subnets }}"
+    security_groups:
+      - "{{ aws_nodes_ingress_alb_sg_id }}"
     scheme: internal
     listeners:
       - Protocol: HTTPS
         Port: 443
+        SslPolicy: "ELBSecurityPolicy-TLS13-1-2-2021-06"
+        Certificates:
+          - CertificateArn: "{{ foundry_ingress_certificate_arn }}"
         DefaultActions:
           - Type: forward
-            TargetGroupName: "{{ cluster_name }}-ingress-443-tg"
+            TargetGroupArn: "{{ aws_nodes_ingress_80_tg.target_group_arn }}"
       - Protocol: HTTP
         Port: 80
         DefaultActions:
           - Type: forward
-            TargetGroupName: "{{ cluster_name }}-ingress-80-tg"
+            TargetGroupArn: "{{ aws_nodes_ingress_80_tg.target_group_arn }}"
     state: present
+  when: foundry_ingress_certificate_arn | default('') | length > 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Create NLB target group for Ingress (443)
+  community.aws.elb_target_group:
+    name: "{{ cluster_name }}-ingress-443-tg"
+    protocol: TCP
+    port: 443
+    vpc_id: "{{ foundry_vpc_id }}"
+    target_type: instance
+    state: present
+  register: aws_nodes_ingress_443_tg
+  when: foundry_ingress_certificate_arn | default('') | length == 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Create NLB target group for Ingress (80)
+  community.aws.elb_target_group:
+    name: "{{ cluster_name }}-ingress-80-tg"
+    protocol: TCP
+    port: 80
+    vpc_id: "{{ foundry_vpc_id }}"
+    target_type: instance
+    state: present
+  register: aws_nodes_ingress_80_tg
+  when: foundry_ingress_certificate_arn | default('') | length == 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Create internal NLB for Ingress
+  community.aws.elb_network_lb:
+    name: "{{ cluster_name }}-ingress"
+    subnets: "{{ foundry_private_subnets }}"
+    scheme: internal
+    listeners:
+      - Protocol: TCP
+        Port: 443
+        DefaultActions:
+          - Type: forward
+            TargetGroupArn: "{{ aws_nodes_ingress_443_tg.target_group_arn }}"
+      - Protocol: TCP
+        Port: 80
+        DefaultActions:
+          - Type: forward
+            TargetGroupArn: "{{ aws_nodes_ingress_80_tg.target_group_arn }}"
+    state: present
+  register: aws_nodes_ingress_nlb
+  when: foundry_ingress_certificate_arn | default('') | length == 0
   tags:
     - aws_nodes
     - load_balancers

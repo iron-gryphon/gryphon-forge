@@ -1,13 +1,7 @@
 ---
 # Route53 DNS records for API, api-int, and *.apps (Ingress)
-
-- name: Get API NLB info
-  community.aws.elb_network_lb_info:
-    names: "{{ cluster_name }}-api"
-  register: aws_nodes_api_nlb_info
-  tags:
-    - aws_nodes
-    - route53
+# API and Ingress use NLBs (elb_network_lb); elb_application_lb_info only returns ALBs.
+# Use registered load_balancer from NLB create tasks in load_balancers.yml.
 
 - name: Create API Route53 record
   amazon.aws.route53:
@@ -15,11 +9,12 @@
     record: "api.{{ cluster_name }}.{{ base_domain }}"
     type: A
     alias: true
-    alias_hosted_zone_id: "{{ aws_nodes_api_nlb_info.load_balancers[0].canonical_hosted_zone_id }}"
+    alias_hosted_zone_id: "{{ aws_nodes_api_nlb.load_balancer.canonical_hosted_zone_id }}"
     alias_evaluate_target_health: false
-    value: "{{ aws_nodes_api_nlb_info.load_balancers[0].dns_name }}"
+    value: "{{ aws_nodes_api_nlb.load_balancer.dns_name }}"
     state: present
-  when: aws_nodes_api_nlb_info.load_balancers | length > 0
+    overwrite: true
+  when: aws_nodes_api_nlb.load_balancer is defined
   tags:
     - aws_nodes
     - route53
@@ -30,11 +25,12 @@
     record: "api-int.{{ cluster_name }}.{{ base_domain }}"
     type: A
     alias: true
-    alias_hosted_zone_id: "{{ aws_nodes_api_nlb_info.load_balancers[0].canonical_hosted_zone_id }}"
+    alias_hosted_zone_id: "{{ aws_nodes_api_nlb.load_balancer.canonical_hosted_zone_id }}"
     alias_evaluate_target_health: false
-    value: "{{ aws_nodes_api_nlb_info.load_balancers[0].dns_name }}"
+    value: "{{ aws_nodes_api_nlb.load_balancer.dns_name }}"
     state: present
-  when: aws_nodes_api_nlb_info.load_balancers | length > 0
+    overwrite: true
+  when: aws_nodes_api_nlb.load_balancer is defined
   tags:
     - aws_nodes
     - route53
@@ -42,22 +38,44 @@
 - name: Get Ingress ALB info
   amazon.aws.elb_application_lb_info:
     names: "{{ cluster_name }}-ingress"
-  register: aws_nodes_ingress_alb_info
+  register: aws_nodes_ingress_lb_info
+  when: foundry_ingress_certificate_arn | default('') | length > 0
   tags:
     - aws_nodes
     - route53
 
-- name: Create wildcard apps Route53 record
+- name: Create wildcard apps Route53 record (ALB)
   amazon.aws.route53:
     hosted_zone_id: "{{ foundry_internal_hosted_zone_id }}"
     record: "*.apps.{{ cluster_name }}.{{ base_domain }}"
     type: A
     alias: true
-    alias_hosted_zone_id: "{{ aws_nodes_ingress_alb_info.load_balancers[0].canonical_hosted_zone_id }}"
+    alias_hosted_zone_id: "{{ aws_nodes_ingress_lb_info.load_balancers[0].canonical_hosted_zone_id }}"
     alias_evaluate_target_health: false
-    value: "{{ aws_nodes_ingress_alb_info.load_balancers[0].dns_name }}"
+    value: "{{ aws_nodes_ingress_lb_info.load_balancers[0].dns_name }}"
     state: present
-  when: aws_nodes_ingress_alb_info.load_balancers | length > 0
+    overwrite: true
+  when:
+    - foundry_ingress_certificate_arn | default('') | length > 0
+    - aws_nodes_ingress_lb_info.load_balancers | default([]) | length > 0
+  tags:
+    - aws_nodes
+    - route53
+
+- name: Create wildcard apps Route53 record (NLB)
+  amazon.aws.route53:
+    hosted_zone_id: "{{ foundry_internal_hosted_zone_id }}"
+    record: "*.apps.{{ cluster_name }}.{{ base_domain }}"
+    type: A
+    alias: true
+    alias_hosted_zone_id: "{{ aws_nodes_ingress_nlb.load_balancer.canonical_hosted_zone_id }}"
+    alias_evaluate_target_health: false
+    value: "{{ aws_nodes_ingress_nlb.load_balancer.dns_name }}"
+    state: present
+    overwrite: true
+  when:
+    - foundry_ingress_certificate_arn | default('') | length == 0
+    - aws_nodes_ingress_nlb.load_balancer is defined
   tags:
     - aws_nodes
     - route53

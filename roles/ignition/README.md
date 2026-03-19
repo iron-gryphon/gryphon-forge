@@ -12,7 +12,7 @@ Wraps `openshift-install` to generate OpenShift ignition configuration files for
 | `cluster_name` | OpenShift cluster name | - |
 | `base_domain` | Base DNS domain | - |
 | `foundry_private_subnets` | List of subnet IDs for platform.aws | - |
-| `foundry_region` | AWS region | `us-east-1` |
+| `foundry_region` | AWS region | `us-east-2` |
 | `master_count` | Number of control plane nodes | 3 |
 | `worker_count` | Number of worker nodes | 3 |
 

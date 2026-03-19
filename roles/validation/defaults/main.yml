@@ -1,4 +1,8 @@
 ---
 # Validation role defaults
+# validation_install_dir overridden by play when using bastion (bastion_install_dir)
+# validation_oc_cmd set when oc binary is on bastion
 
+validation_install_dir: "{{ install_dir }}"
+validation_oc_cmd: oc
 validation_operators_timeout: 600

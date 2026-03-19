@@ -1,12 +1,19 @@
 ---
 # EC2 instances for OpenShift UPI - bootstrap, masters, workers, GPU workers
 # Requires rhcos_ami_id - get from: openshift-install coreos print-stream-json | jq -r '.architectures.x86_64.images.aws.regions["REGION"].image'
+# Ignition configs are uploaded to S3 and referenced via stub (AWS user data limit 16KB)
+
+- name: Set up S3-backed ignition (bucket, IAM, upload)
+  ansible.builtin.include_tasks: ec2_ignition_s3.yml
+  tags:
+    - aws_nodes
+    - ec2
 
 - name: Validate EC2 prerequisites
   ansible.builtin.assert:
     that:
-      - rhcos_ami_id is defined
-      - rhcos_ami_id | length > 0
+      - aws_nodes_rhcos_ami_id_resolved is defined
+      - aws_nodes_rhcos_ami_id_resolved | length > 0
       - ec2_key_name is defined
       - ec2_key_name | length > 0
     fail_msg: "Set rhcos_ami_id and ec2_key_name in group_vars. Get RHCOS AMI from OpenShift release metadata."
@@ -14,10 +21,15 @@
     - aws_nodes
     - ec2
 
-- name: Read bootstrap ignition
-  ansible.builtin.slurp:
-    src: "{{ install_dir }}/bootstrap.ign"
-  register: aws_nodes_bootstrap_ign
+- name: Validate foundry subnets for EC2
+  ansible.builtin.assert:
+    that:
+      - foundry_private_subnets is defined
+      - foundry_private_subnets | length >= 3
+    fail_msg: >-
+      foundry_private_subnets is empty or has fewer than 3 subnets.
+      Load foundry outputs: ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json
+      Or ensure foundry_output.json at {{ foundry_output_path | expanduser }} contains vault_private_subnet_ids (or ocp_upi_subnet_ids).
   tags:
     - aws_nodes
     - ec2
@@ -25,14 +37,17 @@
 - name: Launch bootstrap node
   amazon.aws.ec2_instance:
     name: "{{ cluster_name }}-bootstrap"
-    image_id: "{{ rhcos_ami_id }}"
+    image_id: "{{ aws_nodes_rhcos_ami_id_resolved }}"
     instance_type: "m6i.large"
     key_name: "{{ ec2_key_name }}"
-    network:
-      assign_public_ip: false
-      subnets: "{{ foundry_private_subnets[0] }}"
-    security_group: "{{ aws_nodes_bootstrap_sg_id }}"
-    user_data: "{{ aws_nodes_bootstrap_ign.content | b64decode }}"
+    vpc_subnet_id: "{{ foundry_private_subnets[0] }}"
+    network_interfaces:
+      - subnet_id: "{{ foundry_private_subnets[0] }}"
+        assign_public_ip: false
+        groups:
+          - "{{ aws_nodes_bootstrap_sg_id }}"
+    iam_instance_profile: "{{ aws_nodes_ignition_instance_profile }}"
+    user_data: "{{ aws_nodes_bootstrap_user_data }}"
     tags:
       Name: "{{ cluster_name }}-bootstrap"
       cluster: "{{ cluster_name }}"
@@ -43,25 +58,20 @@
     - aws_nodes
     - ec2
 
-- name: Read master ignition
-  ansible.builtin.slurp:
-    src: "{{ install_dir }}/master.ign"
-  register: aws_nodes_master_ign
-  tags:
-    - aws_nodes
-    - ec2
-
 - name: Launch master nodes
   amazon.aws.ec2_instance:
     name: "{{ cluster_name }}-master-{{ item }}"
-    image_id: "{{ rhcos_ami_id }}"
+    image_id: "{{ aws_nodes_rhcos_ami_id_resolved }}"
     instance_type: "{{ master_instance_type }}"
     key_name: "{{ ec2_key_name }}"
-    network:
-      assign_public_ip: false
-      subnets: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
-    security_group: "{{ aws_nodes_master_sg_id }}"
-    user_data: "{{ aws_nodes_master_ign.content | b64decode }}"
+    vpc_subnet_id: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
+    network_interfaces:
+      - subnet_id: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
+        assign_public_ip: false
+        groups:
+          - "{{ aws_nodes_master_sg_id }}"
+    iam_instance_profile: "{{ aws_nodes_ignition_instance_profile }}"
+    user_data: "{{ aws_nodes_master_user_data }}"
     tags:
       Name: "{{ cluster_name }}-master-{{ item }}"
       cluster: "{{ cluster_name }}"
@@ -72,25 +82,20 @@
     - aws_nodes
     - ec2
 
-- name: Read worker ignition
-  ansible.builtin.slurp:
-    src: "{{ install_dir }}/worker.ign"
-  register: aws_nodes_worker_ign
-  tags:
-    - aws_nodes
-    - ec2
-
 - name: Launch worker nodes
   amazon.aws.ec2_instance:
     name: "{{ cluster_name }}-worker-{{ item }}"
-    image_id: "{{ rhcos_ami_id }}"
+    image_id: "{{ aws_nodes_rhcos_ami_id_resolved }}"
     instance_type: "{{ worker_instance_type }}"
     key_name: "{{ ec2_key_name }}"
-    network:
-      assign_public_ip: false
-      subnets: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
-    security_group: "{{ aws_nodes_worker_sg_id }}"
-    user_data: "{{ aws_nodes_worker_ign.content | b64decode }}"
+    vpc_subnet_id: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
+    network_interfaces:
+      - subnet_id: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
+        assign_public_ip: false
+        groups:
+          - "{{ aws_nodes_worker_sg_id }}"
+    iam_instance_profile: "{{ aws_nodes_ignition_instance_profile }}"
+    user_data: "{{ aws_nodes_worker_user_data }}"
     tags:
       Name: "{{ cluster_name }}-worker-{{ item }}"
       cluster: "{{ cluster_name }}"
@@ -104,14 +109,17 @@
 - name: Launch GPU worker nodes
   amazon.aws.ec2_instance:
     name: "{{ cluster_name }}-gpu-worker-{{ item }}"
-    image_id: "{{ rhcos_ami_id }}"
+    image_id: "{{ aws_nodes_rhcos_ami_id_resolved }}"
     instance_type: "{{ gpu_worker_instance_type }}"
     key_name: "{{ ec2_key_name }}"
-    network:
-      assign_public_ip: false
-      subnets: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
-    security_group: "{{ aws_nodes_worker_sg_id }}"
-    user_data: "{{ aws_nodes_worker_ign.content | b64decode }}"
+    vpc_subnet_id: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
+    network_interfaces:
+      - subnet_id: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
+        assign_public_ip: false
+        groups:
+          - "{{ aws_nodes_worker_sg_id }}"
+    iam_instance_profile: "{{ aws_nodes_ignition_instance_profile }}"
+    user_data: "{{ aws_nodes_worker_user_data }}"
     tags:
       Name: "{{ cluster_name }}-gpu-worker-{{ item }}"
       cluster: "{{ cluster_name }}"

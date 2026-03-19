@@ -3,21 +3,21 @@
 
 - name: Verify kubeconfig exists
   ansible.builtin.stat:
-    path: "{{ install_dir }}/auth/kubeconfig"
+    path: "{{ validation_install_dir }}/auth/kubeconfig"
   register: validation_kubeconfig_stat
   tags:
     - validation
 
 - name: Fail if kubeconfig missing
   ansible.builtin.fail:
-    msg: "Kubeconfig not found at {{ install_dir }}/auth/kubeconfig. Run install first."
+    msg: "Kubeconfig not found at {{ validation_install_dir }}/auth/kubeconfig. Run install first."
   when: not validation_kubeconfig_stat.stat.exists
   tags:
     - validation
 
 - name: Check cluster API reachability
   ansible.builtin.command:
-    cmd: oc whoami --kubeconfig={{ install_dir }}/auth/kubeconfig
+    cmd: "{{ validation_oc_cmd }} whoami --kubeconfig={{ validation_install_dir }}/auth/kubeconfig"
   register: validation_oc_whoami
   changed_when: false
   tags:
@@ -26,7 +26,7 @@
 - name: Verify cluster operators are available
   ansible.builtin.command:
     cmd: >-
-      oc get co --kubeconfig={{ install_dir }}/auth/kubeconfig
+      {{ validation_oc_cmd }} get co --kubeconfig={{ validation_install_dir }}/auth/kubeconfig
       -o jsonpath='{.items[?(@.status.conditions[?(@.type=="Available")].status!="True")].metadata.name}'
   register: validation_degraded_operators
   changed_when: false
@@ -55,7 +55,7 @@
 - name: Check node readiness
   ansible.builtin.command:
     cmd: >-
-      oc get nodes --kubeconfig={{ install_dir }}/auth/kubeconfig
+      {{ validation_oc_cmd }} get nodes --kubeconfig={{ validation_install_dir }}/auth/kubeconfig
       -o jsonpath='{.items[?(@.status.conditions[?(@.type=="Ready")].status!="True")].metadata.name}'
   register: validation_not_ready_nodes
   changed_when: false
@@ -73,7 +73,7 @@
 - name: Get cluster version
   ansible.builtin.command:
     cmd: >-
-      oc get clusterversion version --kubeconfig={{ install_dir }}/auth/kubeconfig
+      {{ validation_oc_cmd }} get clusterversion version --kubeconfig={{ validation_install_dir }}/auth/kubeconfig
       -o jsonpath='{.status.desired.version}'
   register: validation_cluster_version
   changed_when: false

@@ -24,7 +24,7 @@
 
 - name: Resolve pull secret path
   ansible.builtin.set_fact:
-    ignition_pull_secret_resolved: "{{ pull_secret_path | expand_user }}"
+    ignition_pull_secret_resolved: "{{ pull_secret_path | expanduser }}"
   tags:
     - ignition
 
@@ -44,7 +44,7 @@
 
 - name: Resolve SSH public key path
   ansible.builtin.set_fact:
-    ignition_ssh_key_resolved: "{{ ssh_public_key_path | expand_user }}"
+    ignition_ssh_key_resolved: "{{ ssh_public_key_path | expanduser }}"
   tags:
     - ignition
 
@@ -75,32 +75,9 @@
     - ignition
 
 - name: Create install-config.yaml
-  ansible.builtin.copy:
+  ansible.builtin.template:
+    src: install-config.yaml.j2
     dest: "{{ install_dir }}/install-config.yaml"
-    content: |
-      apiVersion: v1
-      baseDomain: {{ base_domain }}
-      metadata:
-        name: {{ cluster_name }}
-      platform:
-        aws:
-          region: {{ foundry_region }}
-          subnets: {{ foundry_private_subnets }}
-      pullSecret: '{{ ignition_pull_secret_data }}'
-      sshKey: |
-        {{ ignition_ssh_key_data }}
-      controlPlane:
-        name: master
-        replicas: {{ master_count }}
-        platform:
-          aws:
-            type: {{ master_instance_type }}
-      compute:
-        - name: worker
-          replicas: {{ worker_count }}
-          platform:
-            aws:
-              type: {{ worker_instance_type }}
     mode: "0600"
   tags:
     - ignition
@@ -111,7 +88,9 @@
     cmd: openshift-install create manifests --dir={{ install_dir }}
     creates: "{{ install_dir }}/manifests/cluster-scheduler-02-config.yml"
   environment:
-    HOME: "{{ ansible_env.HOME | default('/tmp') }}"
+    HOME: "{{ ansible_facts['env']['HOME'] | default('/tmp') }}"
+    AWS_REGION: "{{ foundry_region }}"
+    AWS_DEFAULT_REGION: "{{ foundry_region }}"
   register: ignition_create_manifests
   changed_when: ignition_create_manifests.rc == 0
   tags:
@@ -127,12 +106,34 @@
   tags:
     - ignition
 
+- name: Add ImageContentSourcePolicy manifest (disconnected install)
+  ansible.builtin.copy:
+    dest: "{{ install_dir }}/manifests/image-content-source-policy.yaml"
+    content: |
+      apiVersion: operator.openshift.io/v1alpha1
+      kind: ImageContentSourcePolicy
+      metadata:
+        name: mirror-registry
+      spec:
+        repositoryDigestMirrors:
+        - mirrors:
+          - {{ mirror_registry_url | trim }}/{{ mirror_registry_release_path | default('openshift/release') }}
+          source: quay.io/openshift-release-dev/ocp-release
+        - mirrors:
+          - {{ mirror_registry_url | trim }}/{{ mirror_registry_release_path | default('openshift/release') }}
+          source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+  when: mirror_registry_url | default('') | length > 0
+  tags:
+    - ignition
+
 - name: Generate ignition configs
   ansible.builtin.command:
     cmd: openshift-install create ignition-configs --dir={{ install_dir }}
-    creates: "{{ install_dir }}/bootstrap.ign"
+    creates: "{{ install_dir }}/worker.ign"
   environment:
-    HOME: "{{ ansible_env.HOME | default('/tmp') }}"
+    HOME: "{{ ansible_facts['env']['HOME'] | default('/tmp') }}"
+    AWS_REGION: "{{ foundry_region }}"
+    AWS_DEFAULT_REGION: "{{ foundry_region }}"
   register: ignition_create_ignition
   changed_when: ignition_create_ignition.rc == 0
   tags:

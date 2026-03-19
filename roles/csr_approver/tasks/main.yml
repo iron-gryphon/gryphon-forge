@@ -4,7 +4,7 @@
 
 - name: Wait for bootstrap completion
   ansible.builtin.command:
-    cmd: openshift-install wait-for bootstrap-complete --dir={{ install_dir }} --log-level=info
+    cmd: "{{ csr_approver_openshift_install_cmd }} wait-for bootstrap-complete --dir={{ csr_approver_install_dir }} --log-level=info"
   register: csr_approver_bootstrap_wait
   changed_when: false
   failed_when: false
@@ -13,30 +13,36 @@
 
 - name: Fail if bootstrap did not complete
   ansible.builtin.fail:
-    msg: "Bootstrap did not complete. Check bootstrap node and API connectivity."
+    msg: >-
+      Bootstrap did not complete. Check bootstrap node and API connectivity.
+      Ensure api-int.{{ cluster_name }}.{{ base_domain }} resolves and port 6443 is reachable from bastion.
+      openshift-install stdout: {{ csr_approver_bootstrap_wait.stdout | default('(none)') }}
+      openshift-install stderr: {{ csr_approver_bootstrap_wait.stderr | default('(none)') }}
   when: csr_approver_bootstrap_wait.rc != 0
   tags:
     - csr_approval
 
 - name: Create CSR approval and wait script
   ansible.builtin.copy:
-    dest: "{{ install_dir }}/approve-and-wait.sh"
+    dest: "{{ csr_approver_install_dir }}/approve-and-wait.sh"
     content: |
       #!/bin/bash
       set -e
-      export KUBECONFIG="{{ install_dir }}/auth/kubeconfig"
-      INSTALL_DIR="{{ install_dir }}"
+      export KUBECONFIG="{{ csr_approver_install_dir }}/auth/kubeconfig"
+      INSTALL_DIR="{{ csr_approver_install_dir }}"
       INTERVAL={{ csr_approver_csr_check_interval }}
+      OPENSHIFT_INSTALL="{{ csr_approver_openshift_install_cmd }}"
+      OC_CMD="{{ csr_approver_oc_cmd }}"
 
       # Run install-complete in background; while waiting, approve CSRs
       (
-        openshift-install wait-for install-complete --dir="$INSTALL_DIR" --log-level=info
+        $OPENSHIFT_INSTALL wait-for install-complete --dir="$INSTALL_DIR" --log-level=info
       ) &
       WAIT_PID=$!
 
       while kill -0 $WAIT_PID 2>/dev/null; do
-        for csr in $(oc get csr -o jsonpath='{.items[?(@.status.conditions==null)].metadata.name}' 2>/dev/null); do
-          oc adm certificate approve "$csr" 2>/dev/null && echo "Approved $csr"
+        for csr in $($OC_CMD get csr -o jsonpath='{.items[?(@.status.conditions==null)].metadata.name}' 2>/dev/null); do
+          $OC_CMD adm certificate approve "$csr" 2>/dev/null && echo "Approved $csr"
         done
         sleep $INTERVAL
       done
@@ -48,6 +54,6 @@
 
 - name: Run CSR approval and wait for install complete
   ansible.builtin.command:
-    cmd: "{{ install_dir }}/approve-and-wait.sh"
+    cmd: "{{ csr_approver_install_dir }}/approve-and-wait.sh"
   tags:
     - csr_approval

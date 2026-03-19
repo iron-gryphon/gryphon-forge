@@ -1,0 +1,40 @@
+apiVersion: v1
+baseDomain: {{ base_domain }}
+metadata:
+  name: {{ cluster_name }}
+platform:
+  aws:
+    region: {{ foundry_region }}
+    subnets: {{ foundry_private_subnets }}
+networking:
+  machineNetwork:
+  - cidr: {{ foundry_vault_vpc_cidr | default('10.1.0.0/16') }}
+publish: Internal
+pullSecret: '{{ ignition_pull_secret_data }}'
+sshKey: |
+  {{ ignition_ssh_key_data }}
+{% if mirror_registry_url | default('') | length > 0 %}
+imageContentSources:
+- mirrors:
+  - {{ mirror_registry_url | trim }}/{{ mirror_registry_release_path | default('openshift/release') }}
+  source: quay.io/openshift-release-dev/ocp-release
+- mirrors:
+  - {{ mirror_registry_url | trim }}/{{ mirror_registry_release_path | default('openshift/release') }}
+  source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+{% if mirror_registry_additional_trust_bundle | default('') | length > 0 %}
+additionalTrustBundle: |
+{{ mirror_registry_additional_trust_bundle | trim | indent(2) }}
+{% endif %}
+{% endif %}
+controlPlane:
+  name: master
+  replicas: {{ master_count }}
+  platform:
+    aws:
+      type: {{ master_instance_type }}
+compute:
+  - name: worker
+    replicas: {{ worker_count }}
+    platform:
+      aws:
+        type: {{ worker_instance_type }}
