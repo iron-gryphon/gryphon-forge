@@ -31,6 +31,32 @@
           Last result: rc={{ csr_approver_dns_check.rc | default('n/a') }},
           stderr={{ csr_approver_dns_check.stderr | default('') | trim }}.
 
+# Fail in seconds when the NLB has no targets (otherwise bastion wait_for burns csr_approver_connectivity_timeout).
+- name: Preflight — API target group has registered targets
+  tags:
+    - csr_approval
+  when: not (csr_approver_skip_api_tg_preflight | default(false) | bool)
+  block:
+    - name: Describe API target group from controller
+      community.aws.elb_target_group_info:
+        names:
+          - "{{ cluster_name }}-api-tg"
+        collect_targets_health: true
+        region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region)) }}"
+      delegate_to: localhost
+      connection: local
+      run_once: true
+      register: csr_approver_tg_preflight
+
+    - name: Require API target group to exist with at least one registered target
+      ansible.builtin.assert:
+        that:
+          - csr_approver_tg_preflight.target_groups | default([]) | length > 0
+          - (csr_approver_tg_preflight.target_groups[0].targets_health_description | default([]) | length) > 0
+        fail_msg: >-
+          {{ cluster_name }}-api-tg has no registered targets; the internal NLB cannot reach :6443 from the bastion.
+          Re-run: ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json --tags load_balancers
+
 - name: Validate API port 6443 reachable
   tags:
     - csr_approval
@@ -51,7 +77,7 @@
           2) Bootstrap node running and registered in {{ cluster_name }}-api-tg,
           3) Security groups allow API (6443) from bastion/Nest VPC,
           4) VPC peering routes Nest ↔ Vault.
-          From this host (nc often missing on Amazon Linux): timeout 5 bash -c 'echo >/dev/tcp/{{ api_int_dns_name }}/6443'
+          From bastion test TCP (nc may be missing): timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443"
           or curl -vk --connect-timeout 5 https://{{ api_int_dns_name }}:6443/
 
 - name: Wait for bootstrap completion
@@ -253,7 +279,7 @@
       2) Verify foundry_nest_vpc_cidr is set (bootstrap SG must allow 6443 from Nest for bastion).
       3) Check NLB target health: see aws-inspection-report.txt in logs dir, or AWS Console → EC2 → Target Groups → {{ cluster_name }}-api-tg.
       4) Gather bootstrap logs: openshift-install gather bootstrap --dir={{ csr_approver_install_dir }} --log-level=info
-      5) From bastion, test TCP 6443: timeout 5 bash -c 'echo >/dev/tcp/{{ api_int_dns_name }}/6443'
+      5) From bastion, test TCP 6443: timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443"
       or curl -vk --connect-timeout 5 https://{{ api_int_dns_name }}:6443/ (yum/dnf install nc optional)
       openshift-install stdout: {{ csr_approver_bootstrap_wait.stdout | default('(none)') }}
       openshift-install stderr: {{ csr_approver_bootstrap_wait.stderr | default('(none)') }}

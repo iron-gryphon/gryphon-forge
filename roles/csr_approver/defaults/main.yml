@@ -12,5 +12,7 @@ csr_approver_csr_check_interval: 30
 csr_approver_dns_resolution_retries: 12  # Total attempts (first try is immediate)
 csr_approver_dns_resolution_delay: 30    # Seconds between attempts after a failure
 csr_approver_connectivity_timeout: 300  # Seconds to wait for API DNS/port (bootstrap node can take 3-5 min to start)
+# When false, describe cluster api-tg from the controller before bastion wait_for (needs AWS creds on controller)
+csr_approver_skip_api_tg_preflight: false
 csr_approver_gather_on_failure: true  # When bootstrap fails, gather logs and fetch to controller for review
 # csr_approver_gather_failure_dest: override to set custom path; default is playbook_dir/bootstrap-failure-logs/<cluster>-<epoch>
