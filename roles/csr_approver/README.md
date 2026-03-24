@@ -9,7 +9,9 @@ Watches for pending Certificate Signing Requests (CSRs) from Kubelet during Open
 | `kubeconfig_path` | Path to admin kubeconfig | `{{ install_dir }}/auth/kubeconfig` |
 | `csr_approval_timeout` | Max seconds to wait for cluster ready | 3600 |
 | `csr_check_interval` | Seconds between CSR checks | 30 |
-| `csr_approver_connectivity_timeout` | Seconds to wait for API DNS/port before bootstrap wait | 300 |
+| `csr_approver_dns_resolution_retries` | Attempts for `getent hosts` on api-int (Route53/VPC DNS propagation) | 12 |
+| `csr_approver_dns_resolution_delay` | Seconds between DNS check attempts after a failure | 30 |
+| `csr_approver_connectivity_timeout` | Seconds to wait for API TCP 6443 before bootstrap wait | 300 |
 | `csr_approver_gather_on_failure` | When bootstrap fails, gather logs and fetch to controller | true |
 | `csr_approver_gather_failure_dest` | Override path for gathered logs; default `playbook_dir/bootstrap-failure-logs/<cluster>-<epoch>` | (none) |
 
@@ -17,7 +19,7 @@ Watches for pending Certificate Signing Requests (CSRs) from Kubelet during Open
 
 Before waiting for bootstrap completion, the role validates:
 
-1. **DNS resolution** — `api-int.{{ cluster_name }}.{{ base_domain }}` must resolve (Route53 private zone associated with host VPC).
+1. **DNS resolution** — `api-int.{{ cluster_name }}.{{ base_domain }}` must resolve (retries with `csr_approver_dns_resolution_delay` to allow Route53 / VPC DNS propagation).
 2. **TCP connectivity** — Port 6443 must be reachable within `csr_approver_connectivity_timeout` seconds.
 
 If either check fails, the role fails with a clear message instead of blocking on `openshift-install wait-for bootstrap-complete`.

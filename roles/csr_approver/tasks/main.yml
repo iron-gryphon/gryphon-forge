@@ -3,21 +3,33 @@
 # Run after bootstrap node is up; approves CSRs so masters/workers can join
 
 # --- Connectivity validation (fail fast before long bootstrap wait) ---
-- name: Validate API DNS resolution
-  ansible.builtin.shell: |
-    if getent hosts "{{ api_int_dns_name }}" >/dev/null 2>&1; then
-      echo "Resolved: $(getent hosts '{{ api_int_dns_name }}')"
-    else
-      echo "DNS lookup failed for {{ api_int_dns_name }}"
-      echo "Ensure Route53 private zone is associated with this host's VPC."
-      exit 1
-    fi
-  args:
-    executable: /bin/bash
-  register: csr_approver_dns_check
-  changed_when: false
+# Private zone + api-int alias can take time to answer from bastion VPC DNS; retry before failing.
+- name: Wait for API DNS resolution
   tags:
     - csr_approval
+  block:
+    - name: Query api-int until resolvable
+      ansible.builtin.command:
+        cmd:
+          - getent
+          - hosts
+          - "{{ api_int_dns_name }}"
+      register: csr_approver_dns_check
+      until: csr_approver_dns_check.rc == 0
+      retries: "{{ csr_approver_dns_resolution_retries | int }}"
+      delay: "{{ csr_approver_dns_resolution_delay | int }}"
+      changed_when: false
+
+  rescue:
+    - name: Fail with DNS troubleshooting hint
+      ansible.builtin.fail:
+        msg: >-
+          DNS lookup failed for {{ api_int_dns_name }} after {{ csr_approver_dns_resolution_retries }} attempts
+          ({{ csr_approver_dns_resolution_delay }}s between retries).
+          Ensure the api-int record exists in the private zone, the zone is associated with this host's VPC,
+          and the instance uses VPC DNS (e.g. AmazonProvidedDNS).
+          Last result: rc={{ csr_approver_dns_check.rc | default('n/a') }},
+          stderr={{ csr_approver_dns_check.stderr | default('') | trim }}.
 
 - name: Validate API port 6443 reachable
   ansible.builtin.wait_for:
