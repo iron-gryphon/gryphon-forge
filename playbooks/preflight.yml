@@ -11,12 +11,20 @@
   gather_facts: false
   tasks:
     - name: Resolve path to foundry JSON
+      vars:
+        # Relative paths anchor to gryphon-forge repo root (playbook_dir/..), not the shell cwd, so the same
+        # -e foundry_preflight_path=../gryphon-foundry/foundry_output.json works from repo root or playbooks/.
+        _preflight_raw: >-
+          {{
+            (foundry_preflight_path
+            | default(foundry_output_path | default('../gryphon-foundry/foundry_output.json')))
+            | expanduser
+          }}
       ansible.builtin.set_fact:
         preflight_foundry_file: >-
           {{
-            (foundry_preflight_path
-            | default(foundry_output_path | default(playbook_dir ~ '/../gryphon-foundry/foundry_output.json')))
-            | expanduser
+            _preflight_raw if _preflight_raw.startswith('/')
+            else (playbook_dir ~ '/../' ~ _preflight_raw)
           }}
 
     - name: Stat foundry JSON
