@@ -93,14 +93,27 @@
     - ignition
     - config
 
+- name: Build environment for openshift-install (disconnected release override optional)
+  ansible.builtin.set_fact:
+    ignition_openshift_install_env:
+      HOME: "{{ ansible_facts['env']['HOME'] | default('/tmp') }}"
+      AWS_REGION: "{{ foundry_region }}"
+      AWS_DEFAULT_REGION: "{{ foundry_region }}"
+  tags:
+    - ignition
+
+- name: Add OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE for mirrored payload
+  ansible.builtin.set_fact:
+    ignition_openshift_install_env: "{{ ignition_openshift_install_env | combine({'OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE': openshift_install_release_image_override}) }}"
+  when: openshift_install_release_image_override | default('') | length > 0
+  tags:
+    - ignition
+
 - name: Create manifests (modify for UPI)
   ansible.builtin.command:
     cmd: openshift-install create manifests --dir={{ install_dir }}
     creates: "{{ install_dir }}/manifests/cluster-scheduler-02-config.yml"
-  environment:
-    HOME: "{{ ansible_facts['env']['HOME'] | default('/tmp') }}"
-    AWS_REGION: "{{ foundry_region }}"
-    AWS_DEFAULT_REGION: "{{ foundry_region }}"
+  environment: "{{ ignition_openshift_install_env }}"
   register: ignition_create_manifests
   changed_when: ignition_create_manifests.rc == 0
   tags:
@@ -117,21 +130,10 @@
     - ignition
 
 - name: Add ImageContentSourcePolicy manifest (disconnected install)
-  ansible.builtin.copy:
+  ansible.builtin.template:
+    src: image-content-source-policy.yaml.j2
     dest: "{{ install_dir }}/manifests/image-content-source-policy.yaml"
-    content: |
-      apiVersion: operator.openshift.io/v1alpha1
-      kind: ImageContentSourcePolicy
-      metadata:
-        name: mirror-registry
-      spec:
-        repositoryDigestMirrors:
-        - mirrors:
-          - {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}
-          source: quay.io/openshift-release-dev/ocp-release
-        - mirrors:
-          - {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}
-          source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+    mode: "0644"
   when: ignition_mirror_registry_url_resolved | default('') | length > 0
   tags:
     - ignition
@@ -140,10 +142,7 @@
   ansible.builtin.command:
     cmd: openshift-install create ignition-configs --dir={{ install_dir }}
     creates: "{{ install_dir }}/worker.ign"
-  environment:
-    HOME: "{{ ansible_facts['env']['HOME'] | default('/tmp') }}"
-    AWS_REGION: "{{ foundry_region }}"
-    AWS_DEFAULT_REGION: "{{ foundry_region }}"
+  environment: "{{ ignition_openshift_install_env }}"
   register: ignition_create_ignition
   changed_when: ignition_create_ignition.rc == 0
   tags:

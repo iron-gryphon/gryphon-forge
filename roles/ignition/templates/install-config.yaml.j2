@@ -15,12 +15,19 @@ sshKey: |
   {{ ignition_ssh_key_data }}
 {% if ignition_mirror_registry_url_resolved | default('') | length > 0 %}
 imageContentSources:
-- mirrors:
-  - {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}
-  source: quay.io/openshift-release-dev/ocp-release
-- mirrors:
-  - {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}
-  source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+  - mirrors:
+      - {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}
+    source: quay.io/openshift-release-dev/ocp-release
+  - mirrors:
+      - {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}
+    source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+{% for item in mirror_registry_extra_image_content_sources | default([]) %}
+  - mirrors:
+{% for m in item.mirrors %}
+      - {{ m }}
+{% endfor %}
+    source: {{ item.source }}
+{% endfor %}
 {% set _trust_bundle = (mirror_registry_additional_trust_bundle['value'] if (mirror_registry_additional_trust_bundle is mapping and (mirror_registry_additional_trust_bundle | default({})).get('value') is defined) else (mirror_registry_additional_trust_bundle | default(''))) | trim %}
 {% if _trust_bundle | length > 0 %}
 additionalTrustBundle: |
