@@ -58,32 +58,57 @@
           Re-run: ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json --tags load_balancers
 
     - name: Wait until at least one API target is healthy (NLB does not forward to unhealthy targets)
-      community.aws.elb_target_group_info:
-        names:
-          - "{{ cluster_name }}-api-tg"
-        collect_targets_health: true
-        region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region)) }}"
-      delegate_to: localhost
-      connection: local
-      run_once: true
-      register: csr_approver_tg_health_wait
-      until: >-
-        csr_approver_tg_health_wait is succeeded
-        and (
-          (
-            csr_approver_tg_health_wait.target_groups | default([])
-            | first
-            | default({})
-          ).targets_health_description | default([])
-          | selectattr('target_health', 'defined')
-          | map(attribute='target_health')
-          | map(attribute='state')
-          | select('in', ['healthy'])
-          | list
-          | length > 0
-        )
-      retries: "{{ csr_approver_api_tg_healthy_retries | int }}"
-      delay: "{{ csr_approver_api_tg_healthy_delay | int }}"
+      block:
+        - name: Poll API target group until healthy
+          community.aws.elb_target_group_info:
+            names:
+              - "{{ cluster_name }}-api-tg"
+            collect_targets_health: true
+            region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region)) }}"
+          delegate_to: localhost
+          connection: local
+          run_once: true
+          register: csr_approver_tg_health_wait
+          until: >-
+            csr_approver_tg_health_wait is succeeded
+            and (
+              (
+                csr_approver_tg_health_wait.target_groups | default([])
+                | first
+                | default({})
+              ).targets_health_description | default([])
+              | selectattr('target_health', 'defined')
+              | map(attribute='target_health')
+              | map(attribute='state')
+              | select('in', ['healthy'])
+              | list
+              | length > 0
+            )
+          retries: "{{ csr_approver_api_tg_healthy_retries | int }}"
+          delay: "{{ csr_approver_api_tg_healthy_delay | int }}"
+
+      rescue:
+        - name: Fail when API target group never becomes healthy
+          ansible.builtin.fail:
+            msg: >-
+              No healthy target in {{ cluster_name }}-api-tg after
+              {{ csr_approver_api_tg_healthy_retries | int }} polls
+              ({{ csr_approver_api_tg_healthy_delay | int }}s apart).
+              The NLB only forwards to healthy targets; until kube-apiserver accepts TCP on 6443
+              (usually on the bootstrap node first), health checks stay failed.
+              {% set _tg = (
+                csr_approver_tg_health_wait | default({'target_groups': []})
+              ).target_groups | default([]) | first | default({}) %}
+              {% for th in _tg.targets_health_description | default([]) %}
+              - {{ th.target.id | default('?') }}:{{ th.target.port | default(6443) }}
+                {{ th.target_health.state | default('unknown') }}
+                {% if th.target_health.reason is defined %}({{ th.target_health.reason }}){% endif %}
+
+              {% endfor %}
+              Next: EC2 → Target groups → {{ cluster_name }}-api-tg (health + reason); bootstrap console/SSM
+              and openshift-install gather bootstrap; confirm foundry_vault_vpc_cidr matches the Vault VPC
+              (bootstrap SG must allow 6443 from that CIDR for NLB health checks).
+              Re-apply API TG health settings: ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json --tags load_balancers
 
 - name: Validate API port 6443 reachable
   tags:

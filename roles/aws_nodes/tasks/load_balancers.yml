@@ -10,6 +10,13 @@
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
     state: present
+    # AWS defaults (e.g. healthy_threshold 5 × 30s) delay "healthy" long after apiserver listens; tighten for bootstrap API.
+    health_check_protocol: tcp
+    health_check_port: traffic-port
+    health_check_interval: 15
+    health_check_timeout: 10
+    healthy_threshold_count: 2
+    unhealthy_threshold_count: 2
   register: aws_nodes_api_tg
   tags:
     - aws_nodes
