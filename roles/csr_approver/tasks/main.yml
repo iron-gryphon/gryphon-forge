@@ -10,7 +10,7 @@
   block:
     - name: Query api-int until resolvable
       ansible.builtin.command:
-        cmd:
+        argv:
           - getent
           - hosts
           - "{{ api_int_dns_name }}"
