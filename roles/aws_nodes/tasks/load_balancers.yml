@@ -20,6 +20,9 @@
     name: "{{ cluster_name }}-api"
     subnets: "{{ foundry_private_subnets }}"
     scheme: internal
+    # Required for multi-AZ: bootstrap is in one AZ; without cross-zone, clients that hit an NLB
+    # node in another AZ see no healthy targets until masters serve 6443 → install timeouts.
+    cross_zone_load_balancing: true
     listeners:
       - Protocol: TCP
         Port: 6443
@@ -50,6 +53,7 @@
     name: "{{ cluster_name }}-mcs"
     subnets: "{{ foundry_private_subnets }}"
     scheme: internal
+    cross_zone_load_balancing: true
     listeners:
       - Protocol: TCP
         Port: 22623
@@ -136,6 +140,7 @@
     name: "{{ cluster_name }}-ingress"
     subnets: "{{ foundry_private_subnets }}"
     scheme: internal
+    cross_zone_load_balancing: true
     listeners:
       - Protocol: TCP
         Port: 443

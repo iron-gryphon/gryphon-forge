@@ -66,6 +66,15 @@ ansible-playbook playbooks/destroy_cluster.yml --syntax-check
 ansible-lint
 ```
 
+**Optional — validate foundry JSON before deploy** (no AWS calls):
+
+```bash
+ansible-playbook playbooks/preflight.yml -i inventory/hosts.yml \
+  -e foundry_preflight_path=../gryphon-foundry/foundry_output.json
+```
+
+In **gryphon-foundry**, after `terraform output -json > foundry_output.json`, run `./scripts/check-foundry-json-for-forge.sh foundry_output.json` (requires `jq`).
+
 **After making changes**, agents must:
 
 1. **Run validation** — Execute the commands above to ensure changes pass.
