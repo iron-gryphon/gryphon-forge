@@ -50,7 +50,9 @@
           Check: 1) API/MCS NLBs have cross-zone load balancing enabled (gryphon-forge enables this on new runs),
           2) Bootstrap node running and registered in {{ cluster_name }}-api-tg,
           3) Security groups allow API (6443) from bastion/Nest VPC,
-          4) VPC peering routes Nest ↔ Vault. From this host: nc -zv {{ api_int_dns_name }} 6443
+          4) VPC peering routes Nest ↔ Vault.
+          From this host (nc often missing on Amazon Linux): timeout 5 bash -c 'echo >/dev/tcp/{{ api_int_dns_name }}/6443'
+          or curl -vk --connect-timeout 5 https://{{ api_int_dns_name }}:6443/
 
 - name: Wait for bootstrap completion
   ansible.builtin.command:
@@ -251,7 +253,8 @@
       2) Verify foundry_nest_vpc_cidr is set (bootstrap SG must allow 6443 from Nest for bastion).
       3) Check NLB target health: see aws-inspection-report.txt in logs dir, or AWS Console → EC2 → Target Groups → {{ cluster_name }}-api-tg.
       4) Gather bootstrap logs: openshift-install gather bootstrap --dir={{ csr_approver_install_dir }} --log-level=info
-      5) From bastion, test: nc -zv {{ api_int_dns_name }} 6443
+      5) From bastion, test TCP 6443: timeout 5 bash -c 'echo >/dev/tcp/{{ api_int_dns_name }}/6443'
+      or curl -vk --connect-timeout 5 https://{{ api_int_dns_name }}:6443/ (yum/dnf install nc optional)
       openshift-install stdout: {{ csr_approver_bootstrap_wait.stdout | default('(none)') }}
       openshift-install stderr: {{ csr_approver_bootstrap_wait.stderr | default('(none)') }}
   when: csr_approver_bootstrap_wait.rc != 0

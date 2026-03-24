@@ -78,6 +78,7 @@
       role: master
     state: present
   loop: "{{ range(0, master_count) | list }}"
+  register: aws_nodes_master_launch
   tags:
     - aws_nodes
     - ec2
