@@ -1,0 +1,44 @@
+---
+# One poll attempt; parent loop sets csr_approver_api_poll_attempt and csr_approver_api_healthy_done
+- name: Describe API target group health for poll attempt {{ csr_approver_api_poll_attempt }}
+  community.aws.elb_target_group_info:
+    names:
+      - "{{ cluster_name }}-api-tg"
+    collect_targets_health: true
+    region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region)) }}"
+  delegate_to: localhost
+  connection: local
+  run_once: true
+  register: csr_approver_tg_health_wait
+
+- name: Stop if AWS API failed describing API target group health
+  ansible.builtin.fail:
+    msg: >-
+      {{ cluster_name }}-api-tg: elb_target_group_info failed (attempt {{ csr_approver_api_poll_attempt }}):
+      {{ csr_approver_tg_health_wait.msg | default(csr_approver_tg_health_wait | string) }}
+  when: csr_approver_tg_health_wait.failed | default(false) | bool
+
+- name: Mark done when at least one API target is healthy
+  ansible.builtin.set_fact:
+    csr_approver_api_healthy_done: true
+  when: >-
+    (
+      (
+        csr_approver_tg_health_wait.target_groups | default([])
+        | first
+        | default({})
+      ).targets_health_description | default([])
+      | selectattr('target_health', 'defined')
+      | map(attribute='target_health')
+      | map(attribute='state')
+      | select('in', ['healthy'])
+      | list
+      | length > 0
+    )
+
+- name: Pause before next API target group poll
+  ansible.builtin.pause:
+    seconds: "{{ csr_approver_api_tg_healthy_delay | int }}"
+  when:
+    - not csr_approver_api_healthy_done | bool
+    - (csr_approver_api_poll_attempt | int) < (csr_approver_api_tg_poll_retries | int)

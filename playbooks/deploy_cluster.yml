@@ -140,6 +140,15 @@
       tags:
         - always
 
+    - name: Normalize foundry_vault_vpc_cidr when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_vault_vpc_cidr: "{{ foundry_vault_vpc_cidr['value'] }}"
+      when:
+        - foundry_vault_vpc_cidr is mapping
+        - (foundry_vault_vpc_cidr | default({})).get('value') is defined
+      tags:
+        - always
+
     # Infer region from sneakernet_kms_key_arn when foundry has no explicit region
     - name: Infer foundry_region from KMS ARN when not provided
       ansible.builtin.set_fact:

@@ -59,43 +59,18 @@
 
     - name: Wait until at least one API target is healthy (NLB does not forward to unhealthy targets)
       block:
-        # failed_when false avoids Ansible's generic "Unknown error" when until exhausts; we fail explicitly next.
-        - name: Poll API target group until healthy
-          community.aws.elb_target_group_info:
-            names:
-              - "{{ cluster_name }}-api-tg"
-            collect_targets_health: true
-            region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region)) }}"
-          delegate_to: localhost
-          connection: local
-          run_once: true
-          register: csr_approver_tg_health_wait
-          until: >-
-            csr_approver_tg_health_wait is succeeded
-            and (
-              (
-                csr_approver_tg_health_wait.target_groups | default([])
-                | first
-                | default({})
-              ).targets_health_description | default([])
-              | selectattr('target_health', 'defined')
-              | map(attribute='target_health')
-              | map(attribute='state')
-              | select('in', ['healthy'])
-              | list
-              | length > 0
-            )
-          retries: "{{ csr_approver_api_tg_healthy_retries | int }}"
-          delay: "{{ csr_approver_api_tg_healthy_delay | int }}"
-          failed_when: false
+        # Loop + include_tasks avoids Ansible until/retry "Unknown error" and bogus failed=true on success paths.
+        - name: Reset API target group poll state
+          ansible.builtin.set_fact:
+            csr_approver_api_healthy_done: false
+            csr_approver_api_tg_poll_retries: "{{ [csr_approver_api_tg_healthy_retries | int, 1] | max }}"
 
-        - name: Fail on AWS errors when describing API target group health
-          ansible.builtin.fail:
-            msg: >-
-              {{ cluster_name }}-api-tg: elb_target_group_info failed after
-              {{ csr_approver_tg_health_wait.attempts | default(1) }} attempt(s):
-              {{ csr_approver_tg_health_wait.msg | default(csr_approver_tg_health_wait | string) }}
-          when: csr_approver_tg_health_wait.failed | default(false) | bool
+        - name: Poll API target group until healthy
+          ansible.builtin.include_tasks: poll_api_tg_health.yml
+          loop: "{{ range(1, (csr_approver_api_tg_poll_retries | int) + 1) | list }}"
+          loop_control:
+            loop_var: csr_approver_api_poll_attempt
+          when: not csr_approver_api_healthy_done | bool
 
         - name: Fail when API target group never became healthy
           vars:
@@ -136,8 +111,10 @@
               {% endif %}
 
               Next: EC2 → Target groups → {{ cluster_name }}-api-tg; bootstrap console/SSM; openshift-install gather bootstrap;
-              confirm foundry_vault_vpc_cidr matches the Vault VPC (bootstrap SG allows 6443 for NLB health checks).
-          when: (_healthy_n | int) < 1
+              foundry_vault_vpc_cidr must match Terraform vault_vpc_cidr (Forge bootstrap SG allows 6443 from that CIDR for NLB checks).
+          when:
+            - not csr_approver_api_healthy_done | bool
+            - (_healthy_n | int) < 1
 
 - name: Validate API port 6443 reachable
   tags:
