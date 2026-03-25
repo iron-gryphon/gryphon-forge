@@ -1,3 +1,7 @@
 ---
 # AWS Nodes role defaults
 # Override ec2_key_name and rhcos_ami_id in group_vars
+
+# ELB target registration: retries when using EC2 describe (e.g. --tags load_balancers) — tag filters can lag after launch
+aws_nodes_lb_target_discovery_retries: 40
+aws_nodes_lb_target_discovery_delay: 8

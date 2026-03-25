@@ -3,30 +3,31 @@
 
 - name: Verify kubeconfig exists
   ansible.builtin.stat:
-    path: "{{ install_dir }}/auth/kubeconfig"
+    path: "{{ validation_install_dir }}/auth/kubeconfig"
   register: validation_kubeconfig_stat
   tags:
     - validation
 
 - name: Fail if kubeconfig missing
   ansible.builtin.fail:
-    msg: "Kubeconfig not found at {{ install_dir }}/auth/kubeconfig. Run install first."
+    msg: "Kubeconfig not found at {{ validation_install_dir }}/auth/kubeconfig. Run install first."
   when: not validation_kubeconfig_stat.stat.exists
   tags:
     - validation
 
 - name: Check cluster API reachability
   ansible.builtin.command:
-    cmd: oc whoami --kubeconfig={{ install_dir }}/auth/kubeconfig
+    cmd: "{{ validation_oc_cmd }} whoami --kubeconfig={{ validation_install_dir }}/auth/kubeconfig"
   register: validation_oc_whoami
   changed_when: false
+  failed_when: false
   tags:
     - validation
 
 - name: Verify cluster operators are available
   ansible.builtin.command:
     cmd: >-
-      oc get co --kubeconfig={{ install_dir }}/auth/kubeconfig
+      {{ validation_oc_cmd }} get co --kubeconfig={{ validation_install_dir }}/auth/kubeconfig
       -o jsonpath='{.items[?(@.status.conditions[?(@.type=="Available")].status!="True")].metadata.name}'
   register: validation_degraded_operators
   changed_when: false
@@ -41,21 +42,10 @@
   tags:
     - validation
 
-- name: Fail if critical operators are degraded
-  ansible.builtin.fail:
-    msg: "Some cluster operators are not available: {{ validation_degraded_operators.stdout }}"
-  when:
-    - validation_degraded_operators.stdout is defined
-    - validation_degraded_operators.stdout | length > 0
-    - (validation_degraded_operators.stdout | search('api'))
-      or (validation_degraded_operators.stdout | search('authentication'))
-  tags:
-    - validation
-
 - name: Check node readiness
   ansible.builtin.command:
     cmd: >-
-      oc get nodes --kubeconfig={{ install_dir }}/auth/kubeconfig
+      {{ validation_oc_cmd }} get nodes --kubeconfig={{ validation_install_dir }}/auth/kubeconfig
       -o jsonpath='{.items[?(@.status.conditions[?(@.type=="Ready")].status!="True")].metadata.name}'
   register: validation_not_ready_nodes
   changed_when: false
@@ -73,10 +63,89 @@
 - name: Get cluster version
   ansible.builtin.command:
     cmd: >-
-      oc get clusterversion version --kubeconfig={{ install_dir }}/auth/kubeconfig
+      {{ validation_oc_cmd }} get clusterversion version --kubeconfig={{ validation_install_dir }}/auth/kubeconfig
       -o jsonpath='{.status.desired.version}'
   register: validation_cluster_version
   changed_when: false
+  failed_when: false
+  tags:
+    - validation
+
+- name: Write validation report file
+  ansible.builtin.copy:
+    dest: "{{ validation_install_dir }}/{{ validation_report_filename }}"
+    mode: "0644"
+    content: |
+      Gryphon Forge validation report
+      Generated: {{ ansible_date_time.iso8601 | default('unknown') }}
+      Ansible host: {{ inventory_hostname }}
+
+      --- oc whoami (rc={{ validation_oc_whoami.rc | default('n/a') }}) ---
+      {{ validation_oc_whoami.stdout | default('') }}
+      {{ validation_oc_whoami.stderr | default('') }}
+
+      --- operators not Available (jsonpath list) ---
+      {{ validation_degraded_operators.stdout | default('') }}
+      {% if validation_degraded_operators.stderr | default('') | length > 0 %}
+      stderr: {{ validation_degraded_operators.stderr }}
+      {% endif %}
+
+      --- nodes not Ready (jsonpath list) ---
+      {{ validation_not_ready_nodes.stdout | default('') }}
+      {% if validation_not_ready_nodes.stderr | default('') | length > 0 %}
+      stderr: {{ validation_not_ready_nodes.stderr }}
+      {% endif %}
+
+      --- cluster version (desired) ---
+      {{ validation_cluster_version.stdout | default('') }}
+      {% if validation_cluster_version.stderr | default('') | length > 0 %}
+      stderr: {{ validation_cluster_version.stderr }}
+      {% endif %}
+  tags:
+    - validation
+
+- name: Ensure controller install auth directory exists (for fetch from bastion)
+  ansible.builtin.file:
+    path: "{{ validation_controller_install_dir }}/auth"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  run_once: true
+  when:
+    - inventory_hostname == 'bastion'
+    - validation_sync_auth_to_controller | bool
+  tags:
+    - validation
+
+- name: Fetch validation report from bastion to controller
+  ansible.builtin.fetch:
+    src: "{{ validation_install_dir }}/{{ validation_report_filename }}"
+    dest: "{{ validation_controller_install_dir }}/{{ validation_report_filename }}"
+    flat: true
+  when: inventory_hostname == 'bastion'
+  tags:
+    - validation
+
+- name: Fetch kubeconfig from bastion to controller install directory
+  ansible.builtin.fetch:
+    src: "{{ validation_install_dir }}/auth/kubeconfig"
+    dest: "{{ validation_controller_install_dir }}/auth/kubeconfig"
+    flat: true
+  when:
+    - inventory_hostname == 'bastion'
+    - validation_sync_auth_to_controller | bool
+  tags:
+    - validation
+
+- name: Fetch kubeadmin password from bastion to controller install directory
+  ansible.builtin.fetch:
+    src: "{{ validation_install_dir }}/auth/kubeadmin-password"
+    dest: "{{ validation_controller_install_dir }}/auth/kubeadmin-password"
+    flat: true
+  ignore_errors: true
+  when:
+    - inventory_hostname == 'bastion'
+    - validation_sync_auth_to_controller | bool
   tags:
     - validation
 
@@ -84,12 +153,37 @@
   ansible.builtin.debug:
     msg:
       - "Cluster version: {{ validation_cluster_version.stdout }}"
-      - "API: reachable"
+      - "API: {{ 'reachable' if (validation_oc_whoami.rc | default(1)) == 0 else 'FAILED (see report)' }}"
       - >-
         Operators: {{ 'OK' if (validation_degraded_operators.stdout | length) == 0
         else 'Check: ' + validation_degraded_operators.stdout }}
       - >-
         Nodes: {{ 'OK' if (validation_not_ready_nodes.stdout | length) == 0
         else 'Check: ' + validation_not_ready_nodes.stdout }}
+      - >-
+        Report: {{ validation_install_dir }}/{{ validation_report_filename }}
+        {% if inventory_hostname == 'bastion' %}
+        (also fetched to {{ validation_controller_install_dir }}/{{ validation_report_filename }} on controller)
+        {% endif %}
+  tags:
+    - validation
+
+- name: Fail if oc whoami did not succeed
+  ansible.builtin.fail:
+    msg: >-
+      Cluster API not usable from this host (oc whoami failed, rc={{ validation_oc_whoami.rc }}).
+      See {{ validation_install_dir }}/{{ validation_report_filename }}.
+  when: validation_oc_whoami.rc | default(1) != 0
+  tags:
+    - validation
+
+- name: Fail if critical operators are degraded
+  ansible.builtin.fail:
+    msg: "Some cluster operators are not available: {{ validation_degraded_operators.stdout }}"
+  when:
+    - validation_degraded_operators.stdout is defined
+    - validation_degraded_operators.stdout | length > 0
+    - (validation_degraded_operators.stdout | search('api'))
+      or (validation_degraded_operators.stdout | search('authentication'))
   tags:
     - validation

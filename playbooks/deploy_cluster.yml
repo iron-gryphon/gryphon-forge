@@ -8,37 +8,174 @@
   tasks:
     - name: Check if foundry output exists
       ansible.builtin.stat:
-        path: "{{ foundry_output_path | expand_user }}"
+        path: "{{ foundry_output_path | expanduser }}"
       register: foundry_output_stat
       tags:
         - always
 
     - name: Load foundry_output.json if present
       ansible.builtin.include_vars:
-        file: "{{ foundry_output_path | expand_user }}"
+        file: "{{ foundry_output_path | expanduser }}"
         name: foundry
       when: foundry_output_stat.stat.exists | default(false)
       tags:
         - always
 
     # Foundry vars come from: 1) include_vars (foundry.*), 2) -e @foundry_output.json, 3) all.yml
+    # Handles both flat and Terraform output format (nested .value)
     - name: Override with foundry outputs
       ansible.builtin.set_fact:
         foundry_vpc_id: >-
-          {{ (foundry | default({})).vault_vpc_id
-          | default(vault_vpc_id | default(foundry_vpc_id)) }}
+          {{ (((foundry | default({})).vault_vpc_id | default(vault_vpc_id)) | default({}))['value']
+          | default((foundry | default({})).vault_vpc_id | default(vault_vpc_id) | default(foundry_vpc_id)) }}
         foundry_private_subnets: >-
-          {{ (foundry | default({})).private_subnet_ids
-          | default(private_subnet_ids | default(foundry_private_subnets)) }}
+          {{ (((foundry | default({})).vault_private_subnet_ids
+          | default((foundry | default({})).ocp_upi_subnet_ids)
+          | default(ocp_upi_subnet_ids)
+          | default(vault_private_subnet_ids)
+          | default(private_subnet_ids)) | default({}))['value']
+          | default((foundry | default({})).vault_private_subnet_ids
+          | default((foundry | default({})).ocp_upi_subnet_ids)
+          | default(ocp_upi_subnet_ids)
+          | default(vault_private_subnet_ids)
+          | default(private_subnet_ids) | default(foundry_private_subnets)) }}
         foundry_bastion_security_group_id: >-
-          {{ (foundry | default({})).bastion_security_group_id
-          | default(bastion_security_group_id | default(foundry_bastion_security_group_id)) }}
+          {{ (((foundry | default({})).bastion_security_group_id
+          | default(bastion_security_group_id)) | default({}))['value']
+          | default((foundry | default({})).bastion_security_group_id
+          | default(bastion_security_group_id) | default(foundry_bastion_security_group_id)) }}
         foundry_internal_hosted_zone_id: >-
-          {{ (foundry | default({})).internal_hosted_zone_id
-          | default(internal_hosted_zone_id | default(foundry_internal_hosted_zone_id)) }}
+          {{ (((foundry | default({})).internal_hosted_zone_id
+          | default(internal_hosted_zone_id)) | default({}))['value']
+          | default((foundry | default({})).internal_hosted_zone_id
+          | default(internal_hosted_zone_id) | default(foundry_internal_hosted_zone_id)) }}
         foundry_region: >-
-          {{ (foundry | default({})).region
-          | default(region | default(foundry_region)) }}
+          {{ (((foundry | default({})).region
+          | default((foundry | default({})).aws_region)
+          | default(region)
+          | default(aws_region)) | default({}))['value']
+          | default((foundry | default({})).region
+          | default((foundry | default({})).aws_region)
+          | default(region)
+          | default(aws_region) | default(foundry_region)) }}
+        foundry_vault_vpc_cidr: >-
+          {{ (((foundry | default({})).vault_vpc_cidr | default(vault_vpc_cidr)) | default({}))['value']
+          | default((foundry | default({})).vault_vpc_cidr | default(vault_vpc_cidr) | default(foundry_vault_vpc_cidr) | default('10.1.0.0/16')) }}
+        foundry_nest_vpc_cidr: >-
+          {{ (((foundry | default({})).nest_vpc_cidr | default(nest_vpc_cidr)) | default({}))['value']
+          | default((foundry | default({})).nest_vpc_cidr | default(nest_vpc_cidr) | default(foundry_nest_vpc_cidr) | default('')) }}
+        foundry_bastion_host: >-
+          {{ (((foundry | default({})).bastion_public_ip | default(bastion_public_ip)) | default({}))['value']
+          | default((((foundry | default({})).bastion_public_dns | default(bastion_public_dns)) | default({}))['value'])
+          | default((foundry | default({})).bastion_public_ip | default(bastion_public_ip))
+          | default((foundry | default({})).bastion_public_dns | default(bastion_public_dns))
+          | default('') }}
+        foundry_rhcos_ami_id: >-
+          {{ (((foundry | default({})).rhcos_ami_id | default(rhcos_ami_id)) | default({}))['value']
+          | default((foundry | default({})).rhcos_ami_id | default(rhcos_ami_id) | default('')) }}
+        foundry_ingress_certificate_arn: >-
+          {{ (((foundry | default({})).ingress_certificate_arn | default({})) | default({}))['value']
+          | default((foundry | default({})).ingress_certificate_arn | default('')) }}
+        foundry_base_domain: >-
+          {{ (((foundry | default({})).ocp_base_domain | default(ocp_base_domain)) | default({}))['value']
+          | default((foundry | default({})).ocp_base_domain | default(ocp_base_domain) | default('')) }}
+        mirror_registry_url: >-
+          {{ ((foundry | default({})).mirror_registry_url | default({}))['value']
+          | default((foundry | default({})).mirror_registry_url | default(mirror_registry_url) | default('')) }}
+      tags:
+        - always
+
+    # Unwrap Terraform output format when passed via -e @foundry_output.json
+    - name: Normalize mirror_registry_url when in Terraform output format
+      ansible.builtin.set_fact:
+        mirror_registry_url: "{{ mirror_registry_url['value'] }}"
+      when:
+        - mirror_registry_url is mapping
+        - (mirror_registry_url | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Normalize ocp_base_domain when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_base_domain: "{{ foundry_base_domain['value'] }}"
+      when:
+        - foundry_base_domain is mapping
+        - (foundry_base_domain | default({})).get('value') is defined
+      tags:
+        - always
+
+    # Override base_domain from foundry when foundry provides ocp_base_domain (ensures DNS zone alignment)
+    - name: Override base_domain from foundry ocp_base_domain
+      ansible.builtin.set_fact:
+        base_domain: "{{ foundry_base_domain }}"
+      when: foundry_base_domain | default('') | length > 0
+      tags:
+        - always
+
+    # Normalize root-level vars when passed via -e @foundry_output.json (Terraform output format)
+    - name: Normalize foundry_private_subnets when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_private_subnets: "{{ (vault_private_subnet_ids | default(ocp_upi_subnet_ids))['value'] }}"
+      when:
+        - (vault_private_subnet_ids | default(ocp_upi_subnet_ids) | default({})) is mapping
+        - (vault_private_subnet_ids | default(ocp_upi_subnet_ids) | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Normalize rhcos_ami_id when in Terraform output format
+      ansible.builtin.set_fact:
+        rhcos_ami_id: "{{ rhcos_ami_id['value'] }}"
+      when:
+        - rhcos_ami_id is mapping
+        - (rhcos_ami_id | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Normalize foundry_nest_vpc_cidr when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_nest_vpc_cidr: "{{ foundry_nest_vpc_cidr['value'] }}"
+      when:
+        - foundry_nest_vpc_cidr is mapping
+        - (foundry_nest_vpc_cidr | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Normalize foundry_vault_vpc_cidr when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_vault_vpc_cidr: "{{ foundry_vault_vpc_cidr['value'] }}"
+      when:
+        - foundry_vault_vpc_cidr is mapping
+        - (foundry_vault_vpc_cidr | default({})).get('value') is defined
+      tags:
+        - always
+
+    # Infer region from sneakernet_kms_key_arn when foundry has no explicit region
+    - name: Infer foundry_region from KMS ARN when not provided
+      ansible.builtin.set_fact:
+        foundry_region: "{{ (kms_arn_resolved | split(':'))[3] }}"
+      vars:
+        kms_arn_resolved: >-
+          {{ (((foundry | default({})).sneakernet_kms_key_arn
+          | default(sneakernet_kms_key_arn)) | default({}))['value']
+          | default((foundry | default({})).sneakernet_kms_key_arn
+          | default(sneakernet_kms_key_arn) | default('')) }}
+      when:
+        - foundry_region | length == 0
+        - kms_arn_resolved is defined
+        - kms_arn_resolved | length > 0
+      tags:
+        - always
+
+    - name: Add bastion to inventory for API access
+      ansible.builtin.add_host:
+        name: bastion
+        groups: bastion
+        ansible_host: "{{ foundry_bastion_host }}"
+        ansible_user: "{{ bastion_ssh_user }}"
+        ansible_connection: ssh
+        ansible_ssh_private_key_file: "{{ bastion_ssh_private_key_path | expanduser }}"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+      when: foundry_bastion_host is defined and foundry_bastion_host | length > 0
       tags:
         - always
 
@@ -49,14 +186,41 @@
     - config
     - ignition
   tasks:
+    - name: Fail early when foundry output is missing
+      ansible.builtin.fail:
+        msg: >-
+          Foundry outputs not loaded. Run gryphon-foundry first:
+            cd ../gryphon-foundry && terraform apply -var-file=terraform.tfvars
+            terraform output -json > foundry_output.json
+          Then run: ansible-playbook playbooks/deploy_cluster.yml -e @../gryphon-foundry/foundry_output.json
+          Or copy foundry_output.json to {{ foundry_output_path | expanduser }}
+      when:
+        - not (foundry_output_stat.stat.exists | default(false))
+        - foundry_private_subnets | default([]) | length < 3
+
     - name: Validate configuration
       ansible.builtin.assert:
         that:
           - foundry_vpc_id | length > 0
           - foundry_private_subnets | length >= 3
+          - foundry_region | length > 0
           - cluster_name | length > 0
           - base_domain | length > 0
-        fail_msg: "Missing required config. Set foundry_vpc_id, foundry_private_subnets (min 3), cluster_name, base_domain."
+        fail_msg: >-
+          Missing required config (foundry_vpc_id, foundry_private_subnets (min 3), foundry_region, cluster_name, base_domain).
+          Pass foundry outputs via: ansible-playbook playbooks/deploy_cluster.yml -e @../gryphon-foundry/foundry_output.json
+      tags:
+        - config
+        - ignition
+
+    - name: Validate foundry_nest_vpc_cidr when bastion is used
+      ansible.builtin.assert:
+        that: foundry_nest_vpc_cidr | default('') | length > 0
+        fail_msg: >-
+          foundry_nest_vpc_cidr is required when using bastion for API access. The bootstrap security group
+          must allow port 6443 from the Nest VPC (where the bastion runs) for openshift-install to reach the API.
+          Ensure gryphon-foundry outputs nest_vpc_cidr and pass via: -e @foundry_output.json
+      when: foundry_bastion_host is defined and foundry_bastion_host | length > 0
       tags:
         - config
         - ignition
@@ -78,22 +242,180 @@
         - aws_nodes
         - provisioning
         - ec2
+        - ami_copy
         - load_balancers
         - route53
 
-- name: Bootstrap - Approve CSRs and wait for cluster operators
-  hosts: local
+# Runs only when bastion was added via add_host (foundry provides bastion_public_ip/bastion_public_dns)
+# Bastion downloads openshift-install and oc from Red Hat mirror (Linux binaries, version-compatible)
+# TMPDIR avoids /tmp (459MB tmpfs) - Ansible modules use /var/tmp for temp files
+- name: Sync install directory to bastion for API access
+  hosts: bastion
   gather_facts: true
+  environment:
+    TMPDIR: /var/tmp
+  vars:
+    forge_ocp_installer_url: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-install-linux.tar.gz"
+    forge_ocp_client_url: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-client-linux.tar.gz"
+    # Use /var/tmp to avoid /tmp space limits (openshift-install tarball ~395MB)
+    forge_bastion_tmp: "/var/tmp/gryphon-forge-ocp-tools"
+  tasks:
+    - name: Ensure bastion install directory exists
+      ansible.builtin.file:
+        path: "{{ bastion_install_dir }}"
+        state: directory
+        mode: "0755"
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Ensure bin directory exists on bastion
+      ansible.builtin.file:
+        path: "{{ bastion_install_dir }}/bin"
+        state: directory
+        mode: "0755"
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Copy install directory from controller to bastion
+      ansible.builtin.copy:
+        src: "{{ install_dir }}/"
+        dest: "{{ bastion_install_dir }}/"
+        mode: "0644"
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Check if OCP tools already present on bastion
+      ansible.builtin.stat:
+        path: "{{ bastion_install_dir }}/bin/openshift-install"
+      register: forge_bastion_openshift_install_stat
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Ensure temp directory for OCP tools download
+      ansible.builtin.file:
+        path: "{{ forge_bastion_tmp }}"
+        state: directory
+        mode: "0700"
+      when: not forge_bastion_openshift_install_stat.stat.exists
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Download openshift-install from Red Hat mirror
+      ansible.builtin.get_url:
+        url: "{{ forge_ocp_installer_url }}"
+        dest: "{{ forge_bastion_tmp }}/openshift-install-linux.tar.gz"
+        mode: "0644"
+      when: not forge_bastion_openshift_install_stat.stat.exists
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Extract openshift-install
+      ansible.builtin.unarchive:
+        src: "{{ forge_bastion_tmp }}/openshift-install-linux.tar.gz"
+        dest: "{{ forge_bastion_tmp }}"
+        remote_src: true
+      when: not forge_bastion_openshift_install_stat.stat.exists
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Install openshift-install binary to bin directory
+      ansible.builtin.shell: |
+        BIN=$(find {{ forge_bastion_tmp }} -name 'openshift-install' -type f 2>/dev/null | head -1)
+        cp "$BIN" {{ bastion_install_dir }}/bin/openshift-install
+        chmod 0755 {{ bastion_install_dir }}/bin/openshift-install
+      args:
+        creates: "{{ bastion_install_dir }}/bin/openshift-install"
+      when: not forge_bastion_openshift_install_stat.stat.exists
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Free space before openshift-client download
+      ansible.builtin.shell: |
+        rm -f {{ forge_bastion_tmp }}/openshift-install-linux.tar.gz
+        find {{ forge_bastion_tmp }} -name 'openshift-install' -type f -delete
+      when: not forge_bastion_openshift_install_stat.stat.exists
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Download openshift-client from Red Hat mirror
+      ansible.builtin.get_url:
+        url: "{{ forge_ocp_client_url }}"
+        dest: "{{ forge_bastion_tmp }}/openshift-client-linux.tar.gz"
+        mode: "0644"
+      when: not forge_bastion_openshift_install_stat.stat.exists
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Extract openshift-client
+      ansible.builtin.unarchive:
+        src: "{{ forge_bastion_tmp }}/openshift-client-linux.tar.gz"
+        dest: "{{ forge_bastion_tmp }}"
+        remote_src: true
+      when: not forge_bastion_openshift_install_stat.stat.exists
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Install oc binary to bin directory
+      ansible.builtin.shell: |
+        BIN=$(find {{ forge_bastion_tmp }} -name 'oc' -type f 2>/dev/null | head -1)
+        cp "$BIN" {{ bastion_install_dir }}/bin/oc
+        chmod 0755 {{ bastion_install_dir }}/bin/oc
+      args:
+        creates: "{{ bastion_install_dir }}/bin/oc"
+      when: not forge_bastion_openshift_install_stat.stat.exists
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Remove temp directory
+      ansible.builtin.file:
+        path: "{{ forge_bastion_tmp }}"
+        state: absent
+      when: not forge_bastion_openshift_install_stat.stat.exists
+      tags:
+        - csr_approval
+        - validation
+  tags:
+    - csr_approval
+    - validation
+
+- name: Bootstrap - Approve CSRs and wait for cluster operators
+  hosts: "{{ 'bastion' if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else 'local' }}"
+  gather_facts: true
+  vars:
+    forge_api_install_dir: "{{ bastion_install_dir if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else install_dir }}"
+    forge_use_bastion_bins: "{{ (hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0 }}"
   roles:
     - role: csr_approver
+      vars:
+        csr_approver_install_dir: "{{ forge_api_install_dir }}"
+        csr_approver_openshift_install_cmd: "{{ forge_api_install_dir + '/bin/openshift-install' if forge_use_bastion_bins else 'openshift-install' }}"
+        csr_approver_oc_cmd: "{{ forge_api_install_dir + '/bin/oc' if forge_use_bastion_bins else 'oc' }}"
       tags:
         - csr_approval
         - bootstrap
 
 - name: Validation - Post-install health checks
-  hosts: local
+  hosts: "{{ 'bastion' if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else 'local' }}"
   gather_facts: true
+  vars:
+    forge_api_install_dir: "{{ bastion_install_dir if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else install_dir }}"
+    forge_use_bastion_bins: "{{ (hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0 }}"
   roles:
     - role: validation
+      vars:
+        validation_install_dir: "{{ forge_api_install_dir }}"
+        validation_oc_cmd: "{{ forge_api_install_dir + '/bin/oc' if forge_use_bastion_bins else 'oc' }}"
       tags:
         - validation

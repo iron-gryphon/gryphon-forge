@@ -11,14 +11,19 @@
 # --- Foundry Outputs (defaults; override via foundry_output.json or -e) ---
 foundry_vpc_id: ""
 foundry_private_subnets: []
+foundry_rhcos_ami_id: ""  # Option B: RHCOS AMI imported by foundry from mirror.openshift.com
+foundry_vault_vpc_cidr: "10.1.0.0/16"  # Vault VPC CIDR; used for install-config networking.machineNetwork
+foundry_nest_vpc_cidr: ""  # Nest VPC CIDR; when bastion is in Nest, allows API/MCS from bastion via peering
 foundry_bastion_security_group_id: ""
 foundry_internal_hosted_zone_id: ""
+foundry_base_domain: ""  # From foundry ocp_base_domain; when set, overrides base_domain for DNS zone alignment
 foundry_region: ""
+foundry_ingress_certificate_arn: ""  # ACM cert ARN from foundry; when set, uses ALB with HTTPS
 
 # --- Cluster Configuration ---
 cluster_name: "iron-vault-01"
 base_domain: "fsi.internal"
-ocp_version: "4.15"
+ocp_version: "4.20"
 
 # --- Node Counts ---
 master_count: 3
@@ -44,11 +49,45 @@ pull_secret_path: "{{ lookup('env', 'PULL_SECRET_PATH') | default('~/.openshift/
 # --- SSH Key ---
 ssh_public_key_path: "{{ lookup('env', 'SSH_PUBLIC_KEY_PATH') | default('~/.ssh/id_rsa.pub', true) }}"
 
-# --- EC2 (required for provisioning) ---
-ec2_key_name: ""  # AWS key pair name - must exist in region
-rhcos_ami_id: ""  # RHCOS AMI - get from OpenShift release metadata for your region
+# --- Bastion (for API access; populated from foundry, no hardcoding) ---
+# When foundry provides bastion_public_ip/bastion_public_dns, install_dir is synced
+# to bastion and CSR approval/validation run there (reach cluster API in private VPC).
+# Use /var/tmp (not /tmp) - bastion /tmp is often tmpfs (~459MB) with insufficient space
+# for install dir + OCP tools (~800MB). Override via -e bastion_install_dir=... if needed.
+bastion_install_dir: "/var/tmp/gryphon-forge-install/{{ cluster_name }}"
+bastion_ssh_user: "ec2-user"
+bastion_ssh_private_key_path: "{{ lookup('env', 'BASTION_SSH_KEY_PATH') | default('~/.ssh/' + (ec2_key_name | default('id_rsa', true)) + '.pem', true) }}"
+
+# --- EC2 (required for provisioning; auto-generated when empty) ---
+ec2_key_name: ""  # AWS key pair name - auto-created as {{ cluster_name }}-forge-key when empty
+rhcos_ami_id: ""  # RHCOS AMI - auto-fetched, copied from source, or set manually
+# For disconnected/locked-down AWS (cannot use Red Hat AMI directly): copy from a source AMI
+# you have access to (shared with your account or from another region). Set rhcos_ami_source_id.
+rhcos_ami_source_id: ""  # When set, copy this AMI into your account (Option 1 for disconnected)
+rhcos_ami_source_region: ""  # Source region for copy; defaults to foundry_region when empty
 
 # --- API/Ingress Endpoints ---
 api_dns_name: "api.{{ cluster_name }}.{{ base_domain }}"
 api_int_dns_name: "api-int.{{ cluster_name }}.{{ base_domain }}"
 ingress_dns_name: "*.apps.{{ cluster_name }}.{{ base_domain }}"
+
+# --- Disconnected Install (mirror registry) ---
+# When set, install-config gets imageContentSources and ICSP manifest for air-gapped install.
+# Workflow: run oc-mirror on an internet-connected host → mirror or disk → transfer into env →
+# push to mirror registry reachable from Vault. See Red Hat "Mirroring images for a disconnected installation".
+mirror_registry_url: ""  # e.g. mirror.fsi.internal or mirror.fsi.internal:443
+mirror_registry_release_path: "openshift/release"  # Path where oc-mirror stores release images
+mirror_registry_additional_trust_bundle: ""  # PEM cert for self-signed registry (optional)
+# REQUIRED for disconnected: exact payload image on your mirror (digest form recommended).
+# Must match what oc-mirror placed and the openshift-install version you use (same OCP z-stream).
+# Example: mirror.fsi.internal/openshift/release@sha256:...
+openshift_install_release_image_override: ""
+# Optional: extra imageContentSources / ICSP entries from oc-mirror output (operators, etc.).
+# Format: [ { source: 'registry.redhat.io/foo/bar', mirrors: ['mirror.fsi.internal/...'] }, ... ]
+mirror_registry_extra_image_content_sources: []
+
+# --- Bastion OCP tools (download from mirror; override for air-gapped/internal mirror) ---
+# When bastion has internet, it downloads openshift-install and oc from Red Hat mirror.
+# Use latest-4.x for latest patch in minor version; or exact version e.g. 4.20.16
+forge_ocp_mirror_channel: "latest-{{ ocp_version }}"
+forge_ocp_mirror_base_url: "https://mirror.openshift.com/pub/openshift-v4/clients/ocp"

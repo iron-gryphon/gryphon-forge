@@ -1,4 +1,13 @@
 ---
 # Validation role defaults
+# validation_install_dir overridden by play when using bastion (bastion_install_dir)
+# validation_oc_cmd set when oc binary is on bastion
 
+validation_install_dir: "{{ install_dir }}"
+validation_oc_cmd: oc
 validation_operators_timeout: 600
+# Path on the Ansible controller (same as install_dir when using default inventory paths)
+validation_controller_install_dir: "{{ install_dir }}"
+validation_report_filename: validation-report.txt
+# After validation, pull kubeconfig and kubeadmin-password from bastion to the controller copy of install_dir
+validation_sync_auth_to_controller: true

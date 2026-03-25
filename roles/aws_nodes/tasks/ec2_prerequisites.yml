@@ -1,0 +1,117 @@
+---
+# EC2 prerequisites: RHCOS AMI and key pair
+# Priority: 1) rhcos_ami_id, 2) foundry_rhcos_ami_id (Option B), 3) rhcos_ami_source_id (Option 1), 4) fetch from metadata
+
+- name: Set rhcos_ami_id from foundry (Option B - imported by Terraform)
+  ansible.builtin.set_fact:
+    rhcos_ami_id: "{{ foundry_rhcos_ami_id }}"  # noqa: var-naming[no-role-prefix]
+  when:
+    - rhcos_ami_id | default('') | length == 0
+    - foundry_rhcos_ami_id | default('') | length > 0
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Copy RHCOS AMI from source into account (Option 1 - disconnected/locked-down)
+  community.aws.ec2_ami_copy:
+    source_image_id: "{{ rhcos_ami_source_id }}"
+    source_region: "{{ rhcos_ami_source_region | default(foundry_region) }}"
+    region: "{{ foundry_region }}"
+    name: "{{ cluster_name }}-rhcos-{{ ocp_version | default('4.20') }}"
+    description: "RHCOS for OpenShift {{ ocp_version | default('4.20') }} (copied for disconnected)"
+    tags:
+      Name: "{{ cluster_name }}-rhcos-{{ ocp_version | default('4.20') }}"
+      cluster: "{{ cluster_name }}"
+      purpose: "rhcos-upi"
+    tag_equality: true
+    wait: true
+    wait_timeout: 900
+  register: aws_nodes_rhcos_ami_copy
+  when:
+    - rhcos_ami_id | default('') | length == 0
+    - rhcos_ami_source_id | default('') | length > 0
+  tags:
+    - aws_nodes
+    - ec2
+    - ami_copy
+
+- name: Set rhcos_ami_id from copied AMI
+  ansible.builtin.set_fact:
+    rhcos_ami_id: "{{ aws_nodes_rhcos_ami_copy.image_id }}"  # noqa: var-naming[no-role-prefix]
+  when:
+    - rhcos_ami_id | default('') | length == 0
+    - rhcos_ami_source_id | default('') | length > 0
+    - aws_nodes_rhcos_ami_copy.image_id is defined
+  tags:
+    - aws_nodes
+    - ec2
+    - ami_copy
+
+- name: Fetch RHCOS AMI from OpenShift release metadata
+  ansible.builtin.shell: >-
+    openshift-install coreos print-stream-json
+    | jq -r '.architectures.x86_64.images.aws.regions["{{ foundry_region }}"].image'
+  register: aws_nodes_rhcos_ami_fetch
+  changed_when: false
+  when:
+    - rhcos_ami_id | default('') | length == 0
+    - rhcos_ami_source_id | default('') | length == 0
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Set rhcos_ami_id from OpenShift release metadata
+  ansible.builtin.set_fact:
+    rhcos_ami_id: "{{ aws_nodes_rhcos_ami_fetch.stdout | trim }}"  # noqa: var-naming[no-role-prefix]
+  when:
+    - rhcos_ami_id | default('') | length == 0
+    - aws_nodes_rhcos_ami_fetch.stdout is defined
+    - aws_nodes_rhcos_ami_fetch.stdout | trim | length > 0
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Check if EC2 key pair already exists
+  amazon.aws.ec2_key_info:
+    names:
+      - "{{ cluster_name }}-forge-key"
+    region: "{{ foundry_region }}"
+  register: aws_nodes_ec2_key_check
+  when: ec2_key_name | default('') | length == 0
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Create EC2 key pair
+  amazon.aws.ec2_key:
+    name: "{{ cluster_name }}-forge-key"
+    state: present
+    region: "{{ foundry_region }}"
+    file_name: "{{ ('~/.ssh/' ~ cluster_name ~ '-forge-key.pem') | expanduser }}"
+  register: aws_nodes_ec2_key_result
+  no_log: true
+  when:
+    - ec2_key_name | default('') | length == 0
+    - (aws_nodes_ec2_key_check.keypairs | default([]) | length) == 0
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Set ec2_key_name for auto-created or existing key
+  ansible.builtin.set_fact:
+    ec2_key_name: "{{ cluster_name }}-forge-key"  # noqa: var-naming[no-role-prefix]
+  when: ec2_key_name | default('') | length == 0
+  tags:
+    - aws_nodes
+    - ec2
+
+# Unwrap Terraform output format when rhcos_ami_id passed via -e @foundry_output.json
+# (extra vars override set_fact, so we use aws_nodes_rhcos_ami_id_resolved which -e does not provide)
+- name: Resolve rhcos_ami_id (unwrap Terraform format when passed via -e)
+  ansible.builtin.set_fact:
+    aws_nodes_rhcos_ami_id_resolved: >-
+      {{ (rhcos_ami_id['value'] if (rhcos_ami_id is mapping
+      and (rhcos_ami_id | default({})).get('value') is defined) else rhcos_ami_id) }}
+  tags:
+    - aws_nodes
+    - ec2

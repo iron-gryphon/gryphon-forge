@@ -1,6 +1,12 @@
 ---
 # AWS Nodes role - Provision EC2, ELB, Route53 for OpenShift UPI
 
+- name: Include EC2 prerequisites (RHCOS AMI, key pair)
+  ansible.builtin.include_tasks: ec2_prerequisites.yml
+  tags:
+    - aws_nodes
+    - ec2
+
 - name: Include security groups tasks
   ansible.builtin.include_tasks: security_groups.yml
   tags:

@@ -1,5 +1,7 @@
 ---
 # Security groups for OpenShift UPI nodes in the Vault
+# API/MCS (6443, 22623) must allow from Vault VPC CIDR for NLB health checks (NLB has no SG).
+# When foundry_bastion_security_group_id is set, also allow from bastion for API traffic.
 
 - name: Create bootstrap security group
   amazon.aws.ec2_security_group:
@@ -7,22 +9,72 @@
     description: "Bootstrap node for {{ cluster_name }}"
     vpc_id: "{{ foundry_vpc_id }}"
     state: present
-    rules:
-      - proto: tcp
-        from_port: 22
-        to_port: 22
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "SSH from VPC"
-      - proto: tcp
-        from_port: 6443
-        to_port: 6443
-        group_id: "{{ foundry_bastion_security_group_id }}"
-        rule_desc: "API from bastion"
-      - proto: tcp
-        from_port: 22623
-        to_port: 22623
-        group_id: "{{ foundry_bastion_security_group_id }}"
-        rule_desc: "MCS from bastion"
+    rules: >-
+      {{
+        [
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': '10.0.0.0/8',
+            'rule_desc': 'SSH from VPC'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 6443,
+            'to_port': 6443,
+            'cidr_ip': foundry_vault_vpc_cidr | default('10.1.0.0/16'),
+            'rule_desc': 'API from Vault (NLB health checks)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22623,
+            'to_port': 22623,
+            'cidr_ip': foundry_vault_vpc_cidr | default('10.1.0.0/16'),
+            'rule_desc': 'MCS from Vault (NLB health checks)'
+          }
+        ]
+        + (
+          [
+            {
+              'proto': 'tcp',
+              'from_port': 6443,
+              'to_port': 6443,
+              'group_id': foundry_bastion_security_group_id,
+              'rule_desc': 'API from bastion'
+            },
+            {
+              'proto': 'tcp',
+              'from_port': 22623,
+              'to_port': 22623,
+              'group_id': foundry_bastion_security_group_id,
+              'rule_desc': 'MCS from bastion'
+            }
+          ]
+          if foundry_bastion_security_group_id | default('') | length > 0
+          else []
+        )
+        + (
+          [
+            {
+              'proto': 'tcp',
+              'from_port': 6443,
+              'to_port': 6443,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'API from Nest (bastion via peering)'
+            },
+            {
+              'proto': 'tcp',
+              'from_port': 22623,
+              'to_port': 22623,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'MCS from Nest (bastion via peering)'
+            }
+          ]
+          if foundry_nest_vpc_cidr | default('') | length > 0
+          else []
+        )
+      }}
     tags:
       Name: "{{ cluster_name }}-bootstrap-sg"
       cluster: "{{ cluster_name }}"
@@ -101,11 +153,38 @@
     - aws_nodes
     - security_groups
 
+- name: Create ingress ALB security group
+  amazon.aws.ec2_security_group:
+    name: "{{ cluster_name }}-ingress-alb-sg"
+    description: "Ingress ALB for {{ cluster_name }}"
+    vpc_id: "{{ foundry_vpc_id }}"
+    state: present
+    rules:
+      - proto: tcp
+        from_port: 443
+        to_port: 443
+        cidr_ip: "{{ foundry_vault_vpc_cidr | default('10.1.0.0/16') }}"
+        rule_desc: "HTTPS from VPC"
+      - proto: tcp
+        from_port: 80
+        to_port: 80
+        cidr_ip: "{{ foundry_vault_vpc_cidr | default('10.1.0.0/16') }}"
+        rule_desc: "HTTP from VPC"
+    tags:
+      Name: "{{ cluster_name }}-ingress-alb-sg"
+      cluster: "{{ cluster_name }}"
+  register: aws_nodes_ingress_alb_sg
+  when: foundry_ingress_certificate_arn | default('') | length > 0
+  tags:
+    - aws_nodes
+    - security_groups
+
 - name: Set security group IDs as facts
   ansible.builtin.set_fact:
     aws_nodes_bootstrap_sg_id: "{{ aws_nodes_bootstrap_sg.group_id }}"
     aws_nodes_master_sg_id: "{{ aws_nodes_master_sg.group_id }}"
     aws_nodes_worker_sg_id: "{{ aws_nodes_worker_sg.group_id }}"
+    aws_nodes_ingress_alb_sg_id: "{{ (aws_nodes_ingress_alb_sg | default({})).group_id | default('') }}"
   tags:
     - aws_nodes
     - security_groups

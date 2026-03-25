@@ -1,0 +1,19 @@
+apiVersion: operator.openshift.io/v1alpha1
+kind: ImageContentSourcePolicy
+metadata:
+  name: mirror-registry
+spec:
+  repositoryDigestMirrors:
+    - mirrors:
+        - {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}
+      source: quay.io/openshift-release-dev/ocp-release
+    - mirrors:
+        - {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}
+      source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+{% for item in mirror_registry_extra_image_content_sources | default([]) %}
+    - mirrors:
+{% for m in item.mirrors %}
+        - {{ m }}
+{% endfor %}
+      source: {{ item.source }}
+{% endfor %}
