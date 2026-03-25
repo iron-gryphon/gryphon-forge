@@ -285,10 +285,28 @@
         - csr_approval
         - validation
 
-    - name: Check if OCP tools already present on bastion
-      ansible.builtin.stat:
-        path: "{{ bastion_install_dir }}/bin/openshift-install"
-      register: forge_bastion_openshift_install_stat
+    # Sync copies controller bin/openshift-install + oc (often macOS); bastion must run Linux ELF
+    # binaries. Require both files and ELF magic — do not rely on path existence alone.
+    - name: Decide if bastion needs Linux openshift-install and oc from mirror
+      ansible.builtin.shell: |
+        set -euo pipefail
+        f="{{ bastion_install_dir }}/bin/openshift-install"
+        o="{{ bastion_install_dir }}/bin/oc"
+        elf_hdr() {
+          h=$(head -c 4 "$1" | od -An -t x1 | tr -d '[:space:]')
+          case "$h" in 7f454c46*) return 0;; *) return 1;; esac
+        }
+        if [ ! -f "$f" ] || [ ! -f "$o" ]; then
+          echo need
+          exit 0
+        fi
+        if elf_hdr "$f" && elf_hdr "$o"; then
+          echo skip
+        else
+          echo need
+        fi
+      register: forge_bastion_ocp_tools_plan
+      changed_when: false
       tags:
         - csr_approval
         - validation
@@ -298,7 +316,7 @@
         path: "{{ forge_bastion_tmp }}"
         state: directory
         mode: "0700"
-      when: not forge_bastion_openshift_install_stat.stat.exists
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -308,7 +326,8 @@
         url: "{{ forge_ocp_installer_url_linux }}"
         dest: "{{ forge_bastion_tmp }}/openshift-install-linux.tar.gz"
         mode: "0644"
-      when: not forge_bastion_openshift_install_stat.stat.exists
+        validate_certs: "{{ forge_ocp_mirror_validate_certs | default(true) | bool }}"
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -318,7 +337,7 @@
         src: "{{ forge_bastion_tmp }}/openshift-install-linux.tar.gz"
         dest: "{{ forge_bastion_tmp }}"
         remote_src: true
-      when: not forge_bastion_openshift_install_stat.stat.exists
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -328,9 +347,7 @@
         BIN=$(find {{ forge_bastion_tmp }} -name 'openshift-install' -type f 2>/dev/null | head -1)
         cp "$BIN" {{ bastion_install_dir }}/bin/openshift-install
         chmod 0755 {{ bastion_install_dir }}/bin/openshift-install
-      args:
-        creates: "{{ bastion_install_dir }}/bin/openshift-install"
-      when: not forge_bastion_openshift_install_stat.stat.exists
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -339,7 +356,7 @@
       ansible.builtin.shell: |
         rm -f {{ forge_bastion_tmp }}/openshift-install-linux.tar.gz
         find {{ forge_bastion_tmp }} -name 'openshift-install' -type f -delete
-      when: not forge_bastion_openshift_install_stat.stat.exists
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -349,7 +366,8 @@
         url: "{{ forge_ocp_client_url_linux }}"
         dest: "{{ forge_bastion_tmp }}/openshift-client-linux.tar.gz"
         mode: "0644"
-      when: not forge_bastion_openshift_install_stat.stat.exists
+        validate_certs: "{{ forge_ocp_mirror_validate_certs | default(true) | bool }}"
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -359,7 +377,7 @@
         src: "{{ forge_bastion_tmp }}/openshift-client-linux.tar.gz"
         dest: "{{ forge_bastion_tmp }}"
         remote_src: true
-      when: not forge_bastion_openshift_install_stat.stat.exists
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -369,9 +387,7 @@
         BIN=$(find {{ forge_bastion_tmp }} -name 'oc' -type f 2>/dev/null | head -1)
         cp "$BIN" {{ bastion_install_dir }}/bin/oc
         chmod 0755 {{ bastion_install_dir }}/bin/oc
-      args:
-        creates: "{{ bastion_install_dir }}/bin/oc"
-      when: not forge_bastion_openshift_install_stat.stat.exists
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -380,7 +396,7 @@
       ansible.builtin.file:
         path: "{{ forge_bastion_tmp }}"
         state: absent
-      when: not forge_bastion_openshift_install_stat.stat.exists
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation

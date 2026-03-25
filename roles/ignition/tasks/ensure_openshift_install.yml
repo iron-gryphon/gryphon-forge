@@ -80,13 +80,13 @@
     ignition_ocp_client_archive: "{{ _cli_arch }}"
   vars:
     _inst_arch: >-
-      {{ 'openshift-install-linux.tar.gz' if ansible_system == 'Linux' else
-         ('openshift-install-mac-arm64.tar.gz' if ansible_system == 'Darwin' and ansible_architecture in ['arm64', 'aarch64'] else
-         ('openshift-install-mac.tar.gz' if ansible_system == 'Darwin' else 'unsupported')) }}
+      {{ 'openshift-install-linux.tar.gz' if ansible_facts['system'] == 'Linux' else
+         ('openshift-install-mac-arm64.tar.gz' if ansible_facts['system'] == 'Darwin' and ansible_facts['architecture'] in ['arm64', 'aarch64'] else
+         ('openshift-install-mac.tar.gz' if ansible_facts['system'] == 'Darwin' else 'unsupported')) }}
     _cli_arch: >-
-      {{ 'openshift-client-linux.tar.gz' if ansible_system == 'Linux' else
-         ('openshift-client-mac-arm64.tar.gz' if ansible_system == 'Darwin' and ansible_architecture in ['arm64', 'aarch64'] else
-         ('openshift-client-mac.tar.gz' if ansible_system == 'Darwin' else 'unsupported')) }}
+      {{ 'openshift-client-linux.tar.gz' if ansible_facts['system'] == 'Linux' else
+         ('openshift-client-mac-arm64.tar.gz' if ansible_facts['system'] == 'Darwin' and ansible_facts['architecture'] in ['arm64', 'aarch64'] else
+         ('openshift-client-mac.tar.gz' if ansible_facts['system'] == 'Darwin' else 'unsupported')) }}
   tags:
     - ignition
     - config
@@ -96,7 +96,7 @@
 - name: Fail when controller cannot auto-download OCP clients
   ansible.builtin.fail:
     msg: >-
-      Controller OS {{ ansible_system }}/{{ ansible_architecture }} is not supported for automatic client download.
+      Controller OS {{ ansible_facts['system'] }}/{{ ansible_facts['architecture'] }} is not supported for automatic client download.
       Install OpenShift {{ ocp_version }} openshift-install and oc, then set openshift_install_binary_path
       and openshift_client_binary_path in inventory to absolute paths.
   when:
@@ -137,6 +137,7 @@
     url: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/{{ ignition_ocp_installer_archive }}"
     dest: "{{ install_dir }}/.forge-download-cache/{{ ignition_ocp_installer_archive }}"
     mode: "0644"
+    validate_certs: "{{ forge_ocp_mirror_validate_certs | default(true) | bool }}"
   when:
     - openshift_install_binary_path | default('') | length == 0
     - not ignition_ocp_install_in_dir_stat.stat.exists | default(false)
@@ -151,6 +152,7 @@
     url: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/{{ ignition_ocp_client_archive }}"
     dest: "{{ install_dir }}/.forge-download-cache/{{ ignition_ocp_client_archive }}"
     mode: "0644"
+    validate_certs: "{{ forge_ocp_mirror_validate_certs | default(true) | bool }}"
   when:
     - openshift_client_binary_path | default('') | length == 0
     - not ignition_ocp_oc_in_dir_stat.stat.exists | default(false)
