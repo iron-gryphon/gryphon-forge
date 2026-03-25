@@ -17,6 +17,7 @@
     health_check_timeout: 10
     healthy_threshold_count: 2
     unhealthy_threshold_count: 2
+    region: "{{ foundry_region }}"
   register: aws_nodes_api_tg
   tags:
     - aws_nodes
@@ -37,6 +38,7 @@
           - Type: forward
             TargetGroupArn: "{{ aws_nodes_api_tg.target_group_arn }}"
     state: present
+    region: "{{ foundry_region }}"
   register: aws_nodes_api_nlb
   tags:
     - aws_nodes
@@ -50,6 +52,7 @@
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
     state: present
+    region: "{{ foundry_region }}"
   register: aws_nodes_mcs_tg
   tags:
     - aws_nodes
@@ -68,6 +71,7 @@
           - Type: forward
             TargetGroupArn: "{{ aws_nodes_mcs_tg.target_group_arn }}"
     state: present
+    region: "{{ foundry_region }}"
   tags:
     - aws_nodes
     - load_balancers
@@ -81,6 +85,7 @@
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
     state: present
+    region: "{{ foundry_region }}"
   register: aws_nodes_ingress_80_tg
   when: foundry_ingress_certificate_arn | default('') | length > 0
   tags:
@@ -109,6 +114,7 @@
           - Type: forward
             TargetGroupArn: "{{ aws_nodes_ingress_80_tg.target_group_arn }}"
     state: present
+    region: "{{ foundry_region }}"
   when: foundry_ingress_certificate_arn | default('') | length > 0
   tags:
     - aws_nodes
@@ -122,6 +128,7 @@
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
     state: present
+    region: "{{ foundry_region }}"
   register: aws_nodes_ingress_443_tg
   when: foundry_ingress_certificate_arn | default('') | length == 0
   tags:
@@ -136,6 +143,7 @@
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
     state: present
+    region: "{{ foundry_region }}"
   register: aws_nodes_ingress_80_tg
   when: foundry_ingress_certificate_arn | default('') | length == 0
   tags:
@@ -160,6 +168,7 @@
           - Type: forward
             TargetGroupArn: "{{ aws_nodes_ingress_80_tg.target_group_arn }}"
     state: present
+    region: "{{ foundry_region }}"
   register: aws_nodes_ingress_nlb
   when: foundry_ingress_certificate_arn | default('') | length == 0
   tags:
@@ -249,6 +258,7 @@
     target_id: "{{ item }}"
     target_port: 6443
     state: present
+    region: "{{ foundry_region }}"
   loop: "{{ aws_nodes_lb_api_target_ids }}"
   tags:
     - aws_nodes
@@ -260,6 +270,7 @@
     target_id: "{{ aws_nodes_lb_api_target_ids[0] }}"
     target_port: 22623
     state: present
+    region: "{{ foundry_region }}"
   tags:
     - aws_nodes
     - load_balancers
