@@ -35,7 +35,7 @@ This document helps AI agents understand and collaborate on the **gryphon-forge*
 
 ## Dependencies
 
-- **Tools:** `openshift-install`, `oc`, `ansible` (in `$PATH`)
+- **Tools:** `ansible` in `$PATH`; `openshift-install` and `oc` are placed under `install_dir/bin/` on the controller (mirror download) and `bastion_install_dir/bin/` on the bastion, unless overridden via `openshift_install_binary_path` / `openshift_client_binary_path`
 - **Ansible collections:** `amazon.aws`, `community.aws`, `kubernetes.core`, `community.general` (see `requirements.yml`)
 - **Secrets:** Pull secret at `~/.openshift/pull-secret` (or `PULL_SECRET_PATH`), SSH public key at `~/.ssh/id_rsa.pub`
 

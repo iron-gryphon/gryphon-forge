@@ -255,8 +255,6 @@
   environment:
     TMPDIR: /var/tmp
   vars:
-    forge_ocp_installer_url: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-install-linux.tar.gz"
-    forge_ocp_client_url: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-client-linux.tar.gz"
     # Use /var/tmp to avoid /tmp space limits (openshift-install tarball ~395MB)
     forge_bastion_tmp: "/var/tmp/gryphon-forge-ocp-tools"
   tasks:
@@ -307,7 +305,7 @@
 
     - name: Download openshift-install from Red Hat mirror
       ansible.builtin.get_url:
-        url: "{{ forge_ocp_installer_url }}"
+        url: "{{ forge_ocp_installer_url_linux }}"
         dest: "{{ forge_bastion_tmp }}/openshift-install-linux.tar.gz"
         mode: "0644"
       when: not forge_bastion_openshift_install_stat.stat.exists
@@ -348,7 +346,7 @@
 
     - name: Download openshift-client from Red Hat mirror
       ansible.builtin.get_url:
-        url: "{{ forge_ocp_client_url }}"
+        url: "{{ forge_ocp_client_url_linux }}"
         dest: "{{ forge_bastion_tmp }}/openshift-client-linux.tar.gz"
         mode: "0644"
       when: not forge_bastion_openshift_install_stat.stat.exists
@@ -400,8 +398,12 @@
     - role: csr_approver
       vars:
         csr_approver_install_dir: "{{ forge_api_install_dir }}"
-        csr_approver_openshift_install_cmd: "{{ forge_api_install_dir + '/bin/openshift-install' if forge_use_bastion_bins else 'openshift-install' }}"
-        csr_approver_oc_cmd: "{{ forge_api_install_dir + '/bin/oc' if forge_use_bastion_bins else 'oc' }}"
+        csr_approver_openshift_install_cmd: >-
+          {{ forge_api_install_dir ~ '/bin/openshift-install' if forge_use_bastion_bins
+             else (hostvars['localhost']['openshift_install_cmd'] | default('openshift-install')) }}
+        csr_approver_oc_cmd: >-
+          {{ forge_api_install_dir ~ '/bin/oc' if forge_use_bastion_bins
+             else (hostvars['localhost']['openshift_client_cmd'] | default('oc')) }}
       tags:
         - csr_approval
         - bootstrap
@@ -416,6 +418,8 @@
     - role: validation
       vars:
         validation_install_dir: "{{ forge_api_install_dir }}"
-        validation_oc_cmd: "{{ forge_api_install_dir + '/bin/oc' if forge_use_bastion_bins else 'oc' }}"
+        validation_oc_cmd: >-
+          {{ forge_api_install_dir ~ '/bin/oc' if forge_use_bastion_bins
+             else (hostvars['localhost']['openshift_client_cmd'] | default('oc')) }}
       tags:
         - validation

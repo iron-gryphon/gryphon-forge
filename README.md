@@ -47,7 +47,7 @@ This project expects a `foundry_output.json` or access to the Terraform remote s
 ### 1. Prepare your environment
 The Forge requires the following tools:
 
-* **Controller (your machine):** `openshift-install` and `oc` in `$PATH` for ignition generation only. When using a bastion, CSR approval and validation run on the bastion using Linux binaries downloaded from the Red Hat mirror (see *Bastion OCP tools* below).
+* **Controller (your machine):** The ignition role downloads `openshift-install` and `oc` into `install_dir/bin/` from the same `forge_ocp_mirror_base_url` / `forge_ocp_mirror_channel` as the bastion (Linux or macOS archives), so install state matches `gather bootstrap` / `wait-for` on the bastion. Override with `openshift_install_binary_path` / `openshift_client_binary_path` if the controller cannot reach the mirror. When using a bastion, CSR approval and validation still use Linux binaries under `bastion_install_dir/bin/` (see *Bastion OCP tools* below).
 * `ansible` (with `amazon.aws`, `community.aws`, and `kubernetes.core` collections)
 
 **Virtual environment (recommended)** — Create and activate a virtual environment so Ansible uses the correct Python interpreter with all dependencies:

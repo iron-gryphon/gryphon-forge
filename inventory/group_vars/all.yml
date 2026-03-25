@@ -91,3 +91,10 @@ mirror_registry_extra_image_content_sources: []
 # Use latest-4.x for latest patch in minor version; or exact version e.g. 4.20.16
 forge_ocp_mirror_channel: "latest-{{ ocp_version }}"
 forge_ocp_mirror_base_url: "https://mirror.openshift.com/pub/openshift-v4/clients/ocp"
+# Same URLs used by the ignition role on the controller so install state matches bastion binaries.
+forge_ocp_installer_url_linux: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-install-linux.tar.gz"
+forge_ocp_client_url_linux: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-client-linux.tar.gz"
+# Controller: leave empty to auto-download openshift-install + oc into install_dir/bin (Linux/macOS).
+# Set both to absolute paths for air-gapped controllers or unsupported OS.
+openshift_install_binary_path: ""
+openshift_client_binary_path: ""

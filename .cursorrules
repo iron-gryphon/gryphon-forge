@@ -33,7 +33,7 @@ OCP nodes (RHCOS) are immutable. Do not add Ansible tasks that modify node OS di
 ## AWS & OpenShift
 
 - EC2 provisioning uses `amazon.aws` and `community.aws` collections.
-- Ignition generation uses `openshift-install` (must be in PATH).
+- Ignition generation uses `openshift-install` from `install_dir/bin/` (auto-downloaded from `forge_ocp_mirror_*`, same channel as bastion) or `openshift_install_binary_path` when set.
 - Route53 records use `foundry_internal_hosted_zone_id` for internal DNS.
 
 ## When Editing

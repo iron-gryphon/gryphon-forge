@@ -16,7 +16,7 @@
 
 - name: Regenerate ignition configs when master or worker ign is missing
   ansible.builtin.command:
-    cmd: openshift-install create ignition-configs --dir={{ install_dir }}
+    cmd: "{{ openshift_install_cmd }} create ignition-configs --dir={{ install_dir }}"
   environment:
     HOME: "{{ ansible_facts['env']['HOME'] | default('/tmp') }}"
     AWS_REGION: "{{ foundry_region }}"

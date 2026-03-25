@@ -22,6 +22,12 @@
     - ignition
     - config
 
+- name: Ensure controller openshift-install and oc match bastion mirror channel
+  ansible.builtin.include_tasks: ensure_openshift_install.yml
+  tags:
+    - ignition
+    - config
+
 # Unwrap Terraform output format ({sensitive, type, value}) when passed via -e @foundry_output.json
 - name: Resolve mirror_registry_url (unwrap Terraform output format)
   ansible.builtin.set_fact:
@@ -114,7 +120,7 @@
 
 - name: Create manifests (modify for UPI)
   ansible.builtin.command:
-    cmd: openshift-install create manifests --dir={{ install_dir }}
+    cmd: "{{ openshift_install_cmd }} create manifests --dir={{ install_dir }}"
     creates: "{{ install_dir }}/manifests/cluster-scheduler-02-config.yml"
   environment: "{{ ignition_openshift_install_env }}"
   register: ignition_create_manifests
@@ -143,7 +149,7 @@
 
 - name: Generate ignition configs
   ansible.builtin.command:
-    cmd: openshift-install create ignition-configs --dir={{ install_dir }}
+    cmd: "{{ openshift_install_cmd }} create ignition-configs --dir={{ install_dir }}"
     creates: "{{ install_dir }}/worker.ign"
   environment: "{{ ignition_openshift_install_env }}"
   register: ignition_create_ignition
