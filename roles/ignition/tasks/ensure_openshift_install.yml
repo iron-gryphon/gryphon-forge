@@ -132,6 +132,28 @@
     - aws_nodes
     - ec2
 
+# macOS: Ansible get_url uses controller Python TLS; python.org builds often lack a CA bundle.
+# Apple /usr/bin/curl uses the system trust store and verifies mirror.openshift.com normally.
+- name: Download openshift-install archive from mirror (macOS system curl)
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/curl
+      - -fSL
+      - "-o"
+      - "{{ install_dir }}/.forge-download-cache/{{ ignition_ocp_installer_archive }}"
+      - "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/{{ ignition_ocp_installer_archive }}"
+  args:
+    creates: "{{ install_dir }}/.forge-download-cache/{{ ignition_ocp_installer_archive }}"
+  when:
+    - openshift_install_binary_path | default('') | length == 0
+    - not ignition_ocp_install_in_dir_stat.stat.exists | default(false)
+    - ansible_facts['system'] == 'Darwin'
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
 - name: Download openshift-install archive from mirror
   ansible.builtin.get_url:
     url: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/{{ ignition_ocp_installer_archive }}"
@@ -141,6 +163,27 @@
   when:
     - openshift_install_binary_path | default('') | length == 0
     - not ignition_ocp_install_in_dir_stat.stat.exists | default(false)
+    - ansible_facts['system'] != 'Darwin'
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Download oc archive from mirror (macOS system curl)
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/curl
+      - -fSL
+      - "-o"
+      - "{{ install_dir }}/.forge-download-cache/{{ ignition_ocp_client_archive }}"
+      - "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/{{ ignition_ocp_client_archive }}"
+  args:
+    creates: "{{ install_dir }}/.forge-download-cache/{{ ignition_ocp_client_archive }}"
+  when:
+    - openshift_client_binary_path | default('') | length == 0
+    - not ignition_ocp_oc_in_dir_stat.stat.exists | default(false)
+    - ansible_facts['system'] == 'Darwin'
   tags:
     - ignition
     - config
@@ -156,6 +199,7 @@
   when:
     - openshift_client_binary_path | default('') | length == 0
     - not ignition_ocp_oc_in_dir_stat.stat.exists | default(false)
+    - ansible_facts['system'] != 'Darwin'
   tags:
     - ignition
     - config
