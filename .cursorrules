@@ -22,7 +22,7 @@ gryphon-forge deploys Red Hat OpenShift (OCP) via User-Provisioned Infrastructur
 ## Key Variables
 
 - `foundry_*` — From gryphon-foundry (vpc_id, private_subnets, bastion_sg, hosted_zone, region).
-- `cluster_name`, `base_domain`, `ocp_version` — Cluster identity.
+- `cluster_name`, `base_domain`, `ocp_version` — Cluster identity (`ocp_cluster_name` / `ocp_base_domain` from foundry override these when set).
 - `*_count`, `*_instance_type` — Node sizing (master, worker, gpu_worker).
 - `install_dir`, `foundry_output_path`, `pull_secret_path`, `ssh_public_key_path`.
 

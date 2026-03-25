@@ -79,6 +79,9 @@
         foundry_base_domain: >-
           {{ (((foundry | default({})).ocp_base_domain | default(ocp_base_domain)) | default({}))['value']
           | default((foundry | default({})).ocp_base_domain | default(ocp_base_domain) | default('')) }}
+        foundry_cluster_name: >-
+          {{ (((foundry | default({})).ocp_cluster_name | default(ocp_cluster_name)) | default({}))['value']
+          | default((foundry | default({})).ocp_cluster_name | default(ocp_cluster_name) | default('')) }}
         mirror_registry_url: >-
           {{ ((foundry | default({})).mirror_registry_url | default({}))['value']
           | default((foundry | default({})).mirror_registry_url | default(mirror_registry_url) | default('')) }}
@@ -104,11 +107,28 @@
       tags:
         - always
 
+    - name: Normalize ocp_cluster_name when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_cluster_name: "{{ foundry_cluster_name['value'] }}"
+      when:
+        - foundry_cluster_name is mapping
+        - (foundry_cluster_name | default({})).get('value') is defined
+      tags:
+        - always
+
     # Override base_domain from foundry when foundry provides ocp_base_domain (ensures DNS zone alignment)
     - name: Override base_domain from foundry ocp_base_domain
       ansible.builtin.set_fact:
         base_domain: "{{ foundry_base_domain }}"
       when: foundry_base_domain | default('') | length > 0
+      tags:
+        - always
+
+    # Override cluster_name from foundry when foundry provides ocp_cluster_name (aligns tags, LB names, install_dir)
+    - name: Override cluster_name from foundry ocp_cluster_name
+      ansible.builtin.set_fact:
+        cluster_name: "{{ foundry_cluster_name }}"
+      when: foundry_cluster_name | default('') | length > 0
       tags:
         - always
 
@@ -255,6 +275,9 @@
   environment:
     TMPDIR: /var/tmp
   vars:
+    # Foundry overrides apply to localhost in the first play; bastion must use the same identity for paths and DNS.
+    cluster_name: "{{ hostvars['localhost']['cluster_name'] }}"
+    base_domain: "{{ hostvars['localhost']['base_domain'] }}"
     # Use /var/tmp to avoid /tmp space limits (openshift-install tarball ~395MB)
     forge_bastion_tmp: "/var/tmp/gryphon-forge-ocp-tools"
   tasks:
@@ -408,6 +431,8 @@
   hosts: "{{ 'bastion' if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else 'local' }}"
   gather_facts: true
   vars:
+    cluster_name: "{{ hostvars['localhost']['cluster_name'] }}"
+    base_domain: "{{ hostvars['localhost']['base_domain'] }}"
     forge_api_install_dir: "{{ bastion_install_dir if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else install_dir }}"
     forge_use_bastion_bins: "{{ (hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0 }}"
   roles:
@@ -428,6 +453,8 @@
   hosts: "{{ 'bastion' if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else 'local' }}"
   gather_facts: true
   vars:
+    cluster_name: "{{ hostvars['localhost']['cluster_name'] }}"
+    base_domain: "{{ hostvars['localhost']['base_domain'] }}"
     forge_api_install_dir: "{{ bastion_install_dir if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else install_dir }}"
     forge_use_bastion_bins: "{{ (hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0 }}"
   roles:

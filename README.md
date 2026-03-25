@@ -21,6 +21,7 @@ This project expects a `foundry_output.json` or access to the Terraform remote s
 * `bastion_security_group_id`: To allow administrative access via the VPN.
 * `internal_hosted_zone_id`: To register OCP DNS records (api, api-int, *.apps).
 * `ocp_base_domain`: (Optional) When set by foundry, overrides `base_domain` so DNS records align with the hosted zone. Required when using internal domains (e.g. fsi.internal) with gryphon-foundry's private hosted zone.
+* `ocp_cluster_name`: (Optional) When set by foundry, overrides `cluster_name` (resource tags, load balancers, `install_dir` path) so Forge matches the name Terraform publishes.
 * `ingress_certificate_arn`: (Optional) When present, gryphon-forge uses an ALB with HTTPS for ingress instead of an NLB. Create via gryphon-foundry with `create_ingress_certificate = true`.
 * `bastion_public_ip` or `bastion_public_dns`: When present, CSR approval and validation run on the bastion (reach cluster API in the private VPC). No bastion details are hardcoded in inventory.
 

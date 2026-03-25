@@ -98,6 +98,7 @@ In **gryphon-foundry**, after `terraform output -json > foundry_output.json`, ru
 This project expects `foundry_output.json` (or Terraform remote state) with:
 
 - `vault_vpc_id`, `private_subnet_ids`, `bastion_security_group_id`, `internal_hosted_zone_id`, `region`
+- Optional: `ocp_base_domain`, `ocp_cluster_name`, `vault_vpc_cidr` (see `deploy_cluster.yml` first play for normalization)
 
 **Preferred:** Pass via `-e @foundry_output.json` to avoid modifying `inventory/group_vars/all.yml`:
 

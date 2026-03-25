@@ -17,6 +17,7 @@ foundry_nest_vpc_cidr: ""  # Nest VPC CIDR; when bastion is in Nest, allows API/
 foundry_bastion_security_group_id: ""
 foundry_internal_hosted_zone_id: ""
 foundry_base_domain: ""  # From foundry ocp_base_domain; when set, overrides base_domain for DNS zone alignment
+ocp_cluster_name: ""  # From foundry ocp_cluster_name; deploy_cluster maps to cluster_name when set
 foundry_region: ""
 foundry_ingress_certificate_arn: ""  # ACM cert ARN from foundry; when set, uses ALB with HTTPS
 
