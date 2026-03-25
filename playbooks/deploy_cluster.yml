@@ -308,6 +308,50 @@
         - csr_approval
         - validation
 
+    # Bastion SSH uses bastion_ssh_private_key_path (ec2-user). Bootstrap/RHCOS core uses the key
+    # embedded in install-config (ssh_public_key_path); copy its private half for gather / manual SSH.
+    - name: Stat OCP SSH private key on Ansible controller
+      ansible.builtin.stat:
+        path: "{{ ocp_ssh_private_key_path | expanduser }}"
+      register: forge_ocp_ssh_key_stat
+      delegate_to: localhost
+      connection: local
+      run_once: true
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Ensure OCP SSH key directory on bastion
+      ansible.builtin.file:
+        path: "{{ bastion_install_dir }}/.ocp-ssh"
+        state: directory
+        mode: "0700"
+      when: forge_ocp_ssh_key_stat.stat.exists | default(false)
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Copy OCP cluster SSH private key to bastion (matches install-config sshKey)
+      ansible.builtin.copy:
+        src: "{{ ocp_ssh_private_key_path | expanduser }}"
+        dest: "{{ bastion_install_dir }}/.ocp-ssh/identity"
+        mode: "0600"
+      when: forge_ocp_ssh_key_stat.stat.exists | default(false)
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Warn when OCP SSH private key is missing on controller
+      ansible.builtin.debug:
+        msg: >-
+          No private key at {{ ocp_ssh_private_key_path | expanduser }} (expected to pair with ssh_public_key_path).
+          Set OCP_SSH_PRIVATE_KEY_PATH or align keys. Manual SSH to bootstrap as core and gather bootstrap may fail
+          unless keys exist under ec2-user ~/.ssh on the bastion.
+      when: not forge_ocp_ssh_key_stat.stat.exists | default(false)
+      tags:
+        - csr_approval
+        - validation
+
     # Sync copies controller bin/openshift-install + oc (often macOS); bastion must run Linux ELF
     # binaries. Require both files and ELF magic — do not rely on path existence alone.
     - name: Decide if bastion needs Linux openshift-install and oc from mirror
@@ -445,6 +489,8 @@
         csr_approver_oc_cmd: >-
           {{ forge_api_install_dir ~ '/bin/oc' if forge_use_bastion_bins
              else (hostvars['localhost']['openshift_client_cmd'] | default('oc')) }}
+        csr_approver_ocp_ssh_identity_path: >-
+          {{ bastion_install_dir ~ '/.ocp-ssh/identity' if forge_use_bastion_bins else '' }}
       tags:
         - csr_approval
         - bootstrap

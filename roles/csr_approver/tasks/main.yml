@@ -168,9 +168,24 @@
       tags:
         - csr_approval
 
+    - name: Stat OCP SSH identity for gather bootstrap
+      ansible.builtin.stat:
+        path: "{{ csr_approver_ocp_ssh_identity_path }}"
+      register: csr_approver_gather_ssh_id_stat
+      when: csr_approver_ocp_ssh_identity_path | default('') | length > 0
+
     - name: Run openshift-install gather bootstrap
+      vars:
+        _use_ocp_key: >-
+          {{ csr_approver_ocp_ssh_identity_path | default('') | length > 0
+             and csr_approver_gather_ssh_id_stat is defined
+             and csr_approver_gather_ssh_id_stat.stat.exists | default(false) }}
+        _gather_argv: >-
+          {{ [csr_approver_openshift_install_cmd, 'gather', 'bootstrap',
+              '--dir=' ~ csr_approver_install_dir, '--log-level=info']
+             + (['--key', csr_approver_ocp_ssh_identity_path] if _use_ocp_key else []) }}
       ansible.builtin.command:
-        cmd: "{{ csr_approver_openshift_install_cmd }} gather bootstrap --dir={{ csr_approver_install_dir }} --log-level=info"
+        argv: "{{ _gather_argv }}"
       args:
         chdir: "{{ csr_approver_install_dir }}"
       register: csr_approver_gather_bootstrap
