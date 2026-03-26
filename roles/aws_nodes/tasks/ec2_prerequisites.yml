@@ -2,6 +2,22 @@
 # EC2 prerequisites: RHCOS AMI and key pair
 # Priority: 1) rhcos_ami_id, 2) foundry_rhcos_ami_id (Option B), 3) rhcos_ami_source_id (Option 1), 4) fetch from metadata
 
+- name: Ensure install directory exists (RHCOS metadata and ignition regeneration)
+  ansible.builtin.file:
+    path: "{{ install_dir }}"
+    state: directory
+    mode: "0755"
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Ensure controller openshift-install matches OCP mirror channel
+  ansible.builtin.include_tasks:
+    file: "{{ role_path }}/../ignition/tasks/ensure_openshift_install.yml"
+  tags:
+    - aws_nodes
+    - ec2
+
 - name: Set rhcos_ami_id from foundry (Option B - imported by Terraform)
   ansible.builtin.set_fact:
     rhcos_ami_id: "{{ foundry_rhcos_ami_id }}"  # noqa: var-naming[no-role-prefix]
@@ -49,7 +65,7 @@
 
 - name: Fetch RHCOS AMI from OpenShift release metadata
   ansible.builtin.shell: >-
-    openshift-install coreos print-stream-json
+    {{ openshift_install_cmd }} coreos print-stream-json
     | jq -r '.architectures.x86_64.images.aws.regions["{{ foundry_region }}"].image'
   register: aws_nodes_rhcos_ami_fetch
   changed_when: false

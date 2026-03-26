@@ -10,7 +10,8 @@ networking:
   machineNetwork:
   - cidr: {{ foundry_vault_vpc_cidr | default('10.1.0.0/16') }}
 publish: Internal
-pullSecret: '{{ ignition_pull_secret_data }}'
+pullSecret: |-
+  {{ ignition_pull_secret_data | trim }}
 sshKey: |
   {{ ignition_ssh_key_data }}
 {% if ignition_mirror_registry_url_resolved | default('') | length > 0 %}
@@ -31,7 +32,7 @@ imageContentSources:
 {% set _trust_bundle = (mirror_registry_additional_trust_bundle['value'] if (mirror_registry_additional_trust_bundle is mapping and (mirror_registry_additional_trust_bundle | default({})).get('value') is defined) else (mirror_registry_additional_trust_bundle | default(''))) | trim %}
 {% if _trust_bundle | length > 0 %}
 additionalTrustBundle: |
-{{ _trust_bundle | indent(2) }}
+{{ _trust_bundle | indent(2, true) }}
 {% endif %}
 {% endif %}
 controlPlane:

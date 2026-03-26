@@ -48,6 +48,9 @@
         foundry_base_domain: >-
           {{ (((foundry | default({})).ocp_base_domain | default(ocp_base_domain)) | default({}))['value']
           | default((foundry | default({})).ocp_base_domain | default(ocp_base_domain) | default('')) }}
+        foundry_cluster_name: >-
+          {{ (((foundry | default({})).ocp_cluster_name | default(ocp_cluster_name)) | default({}))['value']
+          | default((foundry | default({})).ocp_cluster_name | default(ocp_cluster_name) | default('')) }}
       tags:
         - always
 
@@ -60,10 +63,26 @@
       tags:
         - always
 
+    - name: Normalize ocp_cluster_name when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_cluster_name: "{{ foundry_cluster_name['value'] }}"
+      when:
+        - foundry_cluster_name is mapping
+        - (foundry_cluster_name | default({})).get('value') is defined
+      tags:
+        - always
+
     - name: Override base_domain from foundry ocp_base_domain
       ansible.builtin.set_fact:
         base_domain: "{{ foundry_base_domain }}"
       when: foundry_base_domain | default('') | length > 0
+      tags:
+        - always
+
+    - name: Override cluster_name from foundry ocp_cluster_name
+      ansible.builtin.set_fact:
+        cluster_name: "{{ foundry_cluster_name }}"
+      when: foundry_cluster_name | default('') | length > 0
       tags:
         - always
 

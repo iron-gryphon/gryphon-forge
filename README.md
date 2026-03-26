@@ -21,6 +21,7 @@ This project expects a `foundry_output.json` or access to the Terraform remote s
 * `bastion_security_group_id`: To allow administrative access via the VPN.
 * `internal_hosted_zone_id`: To register OCP DNS records (api, api-int, *.apps).
 * `ocp_base_domain`: (Optional) When set by foundry, overrides `base_domain` so DNS records align with the hosted zone. Required when using internal domains (e.g. fsi.internal) with gryphon-foundry's private hosted zone.
+* `ocp_cluster_name`: (Optional) When set by foundry, overrides `cluster_name` (resource tags, load balancers, `install_dir` path) so Forge matches the name Terraform publishes.
 * `ingress_certificate_arn`: (Optional) When present, gryphon-forge uses an ALB with HTTPS for ingress instead of an NLB. Create via gryphon-foundry with `create_ingress_certificate = true`.
 * `bastion_public_ip` or `bastion_public_dns`: When present, CSR approval and validation run on the bastion (reach cluster API in the private VPC). No bastion details are hardcoded in inventory.
 
@@ -47,7 +48,7 @@ This project expects a `foundry_output.json` or access to the Terraform remote s
 ### 1. Prepare your environment
 The Forge requires the following tools:
 
-* **Controller (your machine):** `openshift-install` and `oc` in `$PATH` for ignition generation only. When using a bastion, CSR approval and validation run on the bastion using Linux binaries downloaded from the Red Hat mirror (see *Bastion OCP tools* below).
+* **Controller (your machine):** The ignition role downloads `openshift-install` and `oc` into `install_dir/bin/` from the same `forge_ocp_mirror_base_url` / `forge_ocp_mirror_channel` as the bastion (Linux or macOS archives), so install state matches `gather bootstrap` / `wait-for` on the bastion. Override with `openshift_install_binary_path` / `openshift_client_binary_path` if the controller cannot reach the mirror. When using a bastion, CSR approval and validation still use Linux binaries under `bastion_install_dir/bin/` (see *Bastion OCP tools* below).
 * `ansible` (with `amazon.aws`, `community.aws`, and `kubernetes.core` collections)
 
 **Virtual environment (recommended)** — Create and activate a virtual environment so Ansible uses the correct Python interpreter with all dependencies:
@@ -208,7 +209,19 @@ ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json -e ec2_key
    ```
    When `mirror_registry_url` is set, the install-config gets `imageContentSources` and an `ImageContentSourcePolicy` manifest.
 
-5. **Self-signed registry** — If the mirror uses a self-signed cert, set `mirror_registry_additional_trust_bundle` to the PEM certificate content (or path to file, loaded at runtime).
+5. **Registry TLS (required for private CAs / self-signed)** — RHCOS and other Go-based clients validate the registry with modern rules: the certificate **must include Subject Alternative Names (SAN)** listing every DNS name used to reach the mirror (for example `DNS:mirror.fsi.internal`). A certificate with only `CN=mirror.fsi.internal` and no SAN will fail with errors like *certificate relies on legacy Common Name field*.
+
+   - **gryphon-foundry mirror EC2** (`create_mirror_registry = true`): Terraform generates a CA and server certificate with SANs, installs them on the instance, and emits `mirror_registry_additional_trust_bundle` in `terraform output -json`. gryphon-forge reads it from `foundry_output.json` into `install-config` `additionalTrustBundle`—no manual PEM copy from the host.
+
+   - **Replace bad certificates on the mirror** (custom registry or pre-change foundry): install a server cert + key whose SANs match how nodes resolve the registry hostname. From this repo you can generate a small offline CA and a SAN-equipped server cert:
+
+     ```bash
+     ./scripts/generate-mirror-registry-tls.sh mirror.fsi.internal
+     ```
+
+     Use the generated `server-cert.pem` / `server-key.pem` on the mirror (or TLS front-end), then set Forge’s `mirror_registry_additional_trust_bundle` to the PEM contents of **`ca-cert.pem`** from that output (or merge into `foundry_output.json`), regenerate ignition, and redeploy.
+
+   - **Corporate PKI**: ensure the issued server cert’s SAN extension includes the mirror FQDN; supply the signing CA chain in `mirror_registry_additional_trust_bundle` as PEM.
 
 ### 3. Run the Forge
 

@@ -1,7 +1,10 @@
 ---
 # Security groups for OpenShift UPI nodes in the Vault
 # API/MCS (6443, 22623) must allow from Vault VPC CIDR for NLB health checks (NLB has no SG).
+# Bootstrap and master SGs use foundry_vault_vpc_cidr for control-plane ports (not only 10.0.0.0/8).
 # When foundry_bastion_security_group_id is set, also allow from bastion for API traffic.
+# SSH to RHCOS bootstrap: user core, key from install (same as ec2_key_name). Allow Nest CIDR + bastion SG
+# so ssh from the foundry bastion over peering matches API/MCS (not only hardcoded 10.0.0.0/8).
 
 - name: Create bootstrap security group
   amazon.aws.ec2_security_group:
@@ -16,8 +19,15 @@
             'proto': 'tcp',
             'from_port': 22,
             'to_port': 22,
+            'cidr_ip': foundry_vault_vpc_cidr | default('10.1.0.0/16'),
+            'rule_desc': 'SSH from Vault VPC'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
             'cidr_ip': '10.0.0.0/8',
-            'rule_desc': 'SSH from VPC'
+            'rule_desc': 'SSH from 10.0.0.0/8 (VPN or legacy Nest in 10/8)'
           },
           {
             'proto': 'tcp',
@@ -38,6 +48,13 @@
           [
             {
               'proto': 'tcp',
+              'from_port': 22,
+              'to_port': 22,
+              'group_id': foundry_bastion_security_group_id,
+              'rule_desc': 'SSH from bastion security group'
+            },
+            {
+              'proto': 'tcp',
               'from_port': 6443,
               'to_port': 6443,
               'group_id': foundry_bastion_security_group_id,
@@ -56,6 +73,13 @@
         )
         + (
           [
+            {
+              'proto': 'tcp',
+              'from_port': 22,
+              'to_port': 22,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'SSH from Nest (bastion via peering)'
+            },
             {
               'proto': 'tcp',
               'from_port': 6443,
@@ -93,28 +117,28 @@
       - proto: tcp
         from_port: 22
         to_port: 22
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "SSH from VPC"
+        cidr_ip: "{{ foundry_vault_vpc_cidr | default('10.1.0.0/16') }}"
+        rule_desc: "SSH from Vault VPC"
       - proto: tcp
         from_port: 6443
         to_port: 6443
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "API from VPC"
+        cidr_ip: "{{ foundry_vault_vpc_cidr | default('10.1.0.0/16') }}"
+        rule_desc: "API from Vault (NLB health checks)"
       - proto: tcp
         from_port: 2379
         to_port: 2380
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "etcd"
+        cidr_ip: "{{ foundry_vault_vpc_cidr | default('10.1.0.0/16') }}"
+        rule_desc: "etcd from Vault VPC"
       - proto: tcp
         from_port: 10250
         to_port: 10250
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "Kubelet"
+        cidr_ip: "{{ foundry_vault_vpc_cidr | default('10.1.0.0/16') }}"
+        rule_desc: "Kubelet from Vault VPC"
       - proto: tcp
         from_port: 22623
         to_port: 22623
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "MCS"
+        cidr_ip: "{{ foundry_vault_vpc_cidr | default('10.1.0.0/16') }}"
+        rule_desc: "MCS from Vault (NLB health checks)"
     tags:
       Name: "{{ cluster_name }}-master-sg"
       cluster: "{{ cluster_name }}"

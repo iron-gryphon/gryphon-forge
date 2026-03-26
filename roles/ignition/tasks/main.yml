@@ -22,6 +22,12 @@
     - ignition
     - config
 
+- name: Ensure controller openshift-install and oc match bastion mirror channel
+  ansible.builtin.include_tasks: ensure_openshift_install.yml
+  tags:
+    - ignition
+    - config
+
 # Unwrap Terraform output format ({sensitive, type, value}) when passed via -e @foundry_output.json
 - name: Resolve mirror_registry_url (unwrap Terraform output format)
   ansible.builtin.set_fact:
@@ -31,6 +37,23 @@
          else (mirror_registry_url | default(''))) | trim }}
   tags:
     - ignition
+
+- name: Require openshift_install_release_image_override when using a mirror registry
+  ansible.builtin.assert:
+    that:
+      - openshift_install_release_image_override | default('') | trim | length > 0
+    fail_msg: >-
+      Disconnected install: mirror_registry_url is set but openshift_install_release_image_override is empty.
+      Run oc-mirror or oc adm release mirror for the same OCP z-stream as your openshift-install binary
+      (see openshift-install version / forge_ocp_mirror_channel vs ocp_version), push the payload to
+      {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }},
+      then set openshift_install_release_image_override to the mirrored image reference (digest recommended),
+      e.g. {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}@sha256:...
+      See inventory/group_vars/all.yml and scripts/print-disconnected-release-reference.sh.
+  when: ignition_mirror_registry_url_resolved | default('') | length > 0
+  tags:
+    - ignition
+    - config
 
 - name: Resolve pull secret path
   ansible.builtin.set_fact:
@@ -114,7 +137,7 @@
 
 - name: Create manifests (modify for UPI)
   ansible.builtin.command:
-    cmd: openshift-install create manifests --dir={{ install_dir }}
+    cmd: "{{ openshift_install_cmd }} create manifests --dir={{ install_dir }}"
     creates: "{{ install_dir }}/manifests/cluster-scheduler-02-config.yml"
   environment: "{{ ignition_openshift_install_env }}"
   register: ignition_create_manifests
@@ -143,7 +166,7 @@
 
 - name: Generate ignition configs
   ansible.builtin.command:
-    cmd: openshift-install create ignition-configs --dir={{ install_dir }}
+    cmd: "{{ openshift_install_cmd }} create ignition-configs --dir={{ install_dir }}"
     creates: "{{ install_dir }}/worker.ign"
   environment: "{{ ignition_openshift_install_env }}"
   register: ignition_create_ignition

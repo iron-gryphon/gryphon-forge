@@ -79,9 +79,21 @@
         foundry_base_domain: >-
           {{ (((foundry | default({})).ocp_base_domain | default(ocp_base_domain)) | default({}))['value']
           | default((foundry | default({})).ocp_base_domain | default(ocp_base_domain) | default('')) }}
+        foundry_cluster_name: >-
+          {{ (((foundry | default({})).ocp_cluster_name | default(ocp_cluster_name)) | default({}))['value']
+          | default((foundry | default({})).ocp_cluster_name | default(ocp_cluster_name) | default('')) }}
         mirror_registry_url: >-
           {{ ((foundry | default({})).mirror_registry_url | default({}))['value']
           | default((foundry | default({})).mirror_registry_url | default(mirror_registry_url) | default('')) }}
+        mirror_registry_additional_trust_bundle: >-
+          {{
+            (
+              ((foundry | default({})).mirror_registry_additional_trust_bundle | default({}))['value']
+              | default((foundry | default({})).mirror_registry_additional_trust_bundle
+              | default(mirror_registry_additional_trust_bundle) | default(''), true)
+            )
+            | default('', true)
+          }}
       tags:
         - always
 
@@ -95,6 +107,15 @@
       tags:
         - always
 
+    - name: Normalize mirror_registry_additional_trust_bundle when in Terraform output format
+      ansible.builtin.set_fact:
+        mirror_registry_additional_trust_bundle: "{{ mirror_registry_additional_trust_bundle['value'] | default('', true) }}"
+      when:
+        - mirror_registry_additional_trust_bundle is mapping
+        - (mirror_registry_additional_trust_bundle | default({})).get('value') is defined
+      tags:
+        - always
+
     - name: Normalize ocp_base_domain when in Terraform output format
       ansible.builtin.set_fact:
         foundry_base_domain: "{{ foundry_base_domain['value'] }}"
@@ -104,11 +125,28 @@
       tags:
         - always
 
+    - name: Normalize ocp_cluster_name when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_cluster_name: "{{ foundry_cluster_name['value'] }}"
+      when:
+        - foundry_cluster_name is mapping
+        - (foundry_cluster_name | default({})).get('value') is defined
+      tags:
+        - always
+
     # Override base_domain from foundry when foundry provides ocp_base_domain (ensures DNS zone alignment)
     - name: Override base_domain from foundry ocp_base_domain
       ansible.builtin.set_fact:
         base_domain: "{{ foundry_base_domain }}"
       when: foundry_base_domain | default('') | length > 0
+      tags:
+        - always
+
+    # Override cluster_name from foundry when foundry provides ocp_cluster_name (aligns tags, LB names, install_dir)
+    - name: Override cluster_name from foundry ocp_cluster_name
+      ansible.builtin.set_fact:
+        cluster_name: "{{ foundry_cluster_name }}"
+      when: foundry_cluster_name | default('') | length > 0
       tags:
         - always
 
@@ -255,8 +293,9 @@
   environment:
     TMPDIR: /var/tmp
   vars:
-    forge_ocp_installer_url: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-install-linux.tar.gz"
-    forge_ocp_client_url: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-client-linux.tar.gz"
+    # Foundry overrides apply to localhost in the first play; bastion must use the same identity for paths and DNS.
+    cluster_name: "{{ hostvars['localhost']['cluster_name'] }}"
+    base_domain: "{{ hostvars['localhost']['base_domain'] }}"
     # Use /var/tmp to avoid /tmp space limits (openshift-install tarball ~395MB)
     forge_bastion_tmp: "/var/tmp/gryphon-forge-ocp-tools"
   tasks:
@@ -287,10 +326,78 @@
         - csr_approval
         - validation
 
-    - name: Check if OCP tools already present on bastion
+    # Bastion SSH uses bastion_ssh_private_key_path (ec2-user). Bootstrap/RHCOS core uses the key
+    # embedded in install-config (ssh_public_key_path); copy its private half for gather / manual SSH.
+    - name: Stat OCP SSH private key on Ansible controller
       ansible.builtin.stat:
-        path: "{{ bastion_install_dir }}/bin/openshift-install"
-      register: forge_bastion_openshift_install_stat
+        path: "{{ ocp_ssh_private_key_path | expanduser }}"
+      register: forge_ocp_ssh_key_stat
+      delegate_to: localhost
+      connection: local
+      run_once: true
+      tags:
+        - csr_approval
+        - validation
+
+    # ansible.cfg enables become globally; without owner/group this dir/file end up root:root
+    # (mode 0700/0600) and ec2-user cannot use -i for manual SSH to bootstrap as core.
+    - name: Ensure OCP SSH key directory on bastion
+      ansible.builtin.file:
+        path: "{{ bastion_install_dir }}/.ocp-ssh"
+        state: directory
+        mode: "0700"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      when: forge_ocp_ssh_key_stat.stat.exists | default(false)
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Copy OCP cluster SSH private key to bastion (matches install-config sshKey)
+      ansible.builtin.copy:
+        src: "{{ ocp_ssh_private_key_path | expanduser }}"
+        dest: "{{ bastion_install_dir }}/.ocp-ssh/identity"
+        mode: "0600"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      when: forge_ocp_ssh_key_stat.stat.exists | default(false)
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Warn when OCP SSH private key is missing on controller
+      ansible.builtin.debug:
+        msg: >-
+          No private key at {{ ocp_ssh_private_key_path | expanduser }} (expected to pair with ssh_public_key_path).
+          Set OCP_SSH_PRIVATE_KEY_PATH or align keys. Manual SSH to bootstrap as core and gather bootstrap may fail
+          unless keys exist under ec2-user ~/.ssh on the bastion.
+      when: not forge_ocp_ssh_key_stat.stat.exists | default(false)
+      tags:
+        - csr_approval
+        - validation
+
+    # Sync copies controller bin/openshift-install + oc (often macOS); bastion must run Linux ELF
+    # binaries. Require both files and ELF magic — do not rely on path existence alone.
+    - name: Decide if bastion needs Linux openshift-install and oc from mirror
+      ansible.builtin.shell: |
+        set -euo pipefail
+        f="{{ bastion_install_dir }}/bin/openshift-install"
+        o="{{ bastion_install_dir }}/bin/oc"
+        elf_hdr() {
+          h=$(head -c 4 "$1" | od -An -t x1 | tr -d '[:space:]')
+          case "$h" in 7f454c46*) return 0;; *) return 1;; esac
+        }
+        if [ ! -f "$f" ] || [ ! -f "$o" ]; then
+          echo need
+          exit 0
+        fi
+        if elf_hdr "$f" && elf_hdr "$o"; then
+          echo skip
+        else
+          echo need
+        fi
+      register: forge_bastion_ocp_tools_plan
+      changed_when: false
       tags:
         - csr_approval
         - validation
@@ -300,17 +407,18 @@
         path: "{{ forge_bastion_tmp }}"
         state: directory
         mode: "0700"
-      when: not forge_bastion_openshift_install_stat.stat.exists
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
 
     - name: Download openshift-install from Red Hat mirror
       ansible.builtin.get_url:
-        url: "{{ forge_ocp_installer_url }}"
+        url: "{{ forge_ocp_installer_url_linux }}"
         dest: "{{ forge_bastion_tmp }}/openshift-install-linux.tar.gz"
         mode: "0644"
-      when: not forge_bastion_openshift_install_stat.stat.exists
+        validate_certs: "{{ forge_ocp_mirror_validate_certs | default(true) | bool }}"
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -320,7 +428,7 @@
         src: "{{ forge_bastion_tmp }}/openshift-install-linux.tar.gz"
         dest: "{{ forge_bastion_tmp }}"
         remote_src: true
-      when: not forge_bastion_openshift_install_stat.stat.exists
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -330,9 +438,7 @@
         BIN=$(find {{ forge_bastion_tmp }} -name 'openshift-install' -type f 2>/dev/null | head -1)
         cp "$BIN" {{ bastion_install_dir }}/bin/openshift-install
         chmod 0755 {{ bastion_install_dir }}/bin/openshift-install
-      args:
-        creates: "{{ bastion_install_dir }}/bin/openshift-install"
-      when: not forge_bastion_openshift_install_stat.stat.exists
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -341,17 +447,18 @@
       ansible.builtin.shell: |
         rm -f {{ forge_bastion_tmp }}/openshift-install-linux.tar.gz
         find {{ forge_bastion_tmp }} -name 'openshift-install' -type f -delete
-      when: not forge_bastion_openshift_install_stat.stat.exists
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
 
     - name: Download openshift-client from Red Hat mirror
       ansible.builtin.get_url:
-        url: "{{ forge_ocp_client_url }}"
+        url: "{{ forge_ocp_client_url_linux }}"
         dest: "{{ forge_bastion_tmp }}/openshift-client-linux.tar.gz"
         mode: "0644"
-      when: not forge_bastion_openshift_install_stat.stat.exists
+        validate_certs: "{{ forge_ocp_mirror_validate_certs | default(true) | bool }}"
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -361,7 +468,7 @@
         src: "{{ forge_bastion_tmp }}/openshift-client-linux.tar.gz"
         dest: "{{ forge_bastion_tmp }}"
         remote_src: true
-      when: not forge_bastion_openshift_install_stat.stat.exists
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -371,9 +478,7 @@
         BIN=$(find {{ forge_bastion_tmp }} -name 'oc' -type f 2>/dev/null | head -1)
         cp "$BIN" {{ bastion_install_dir }}/bin/oc
         chmod 0755 {{ bastion_install_dir }}/bin/oc
-      args:
-        creates: "{{ bastion_install_dir }}/bin/oc"
-      when: not forge_bastion_openshift_install_stat.stat.exists
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -382,7 +487,7 @@
       ansible.builtin.file:
         path: "{{ forge_bastion_tmp }}"
         state: absent
-      when: not forge_bastion_openshift_install_stat.stat.exists
+      when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
       tags:
         - csr_approval
         - validation
@@ -394,14 +499,22 @@
   hosts: "{{ 'bastion' if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else 'local' }}"
   gather_facts: true
   vars:
+    cluster_name: "{{ hostvars['localhost']['cluster_name'] }}"
+    base_domain: "{{ hostvars['localhost']['base_domain'] }}"
     forge_api_install_dir: "{{ bastion_install_dir if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else install_dir }}"
     forge_use_bastion_bins: "{{ (hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0 }}"
   roles:
     - role: csr_approver
       vars:
         csr_approver_install_dir: "{{ forge_api_install_dir }}"
-        csr_approver_openshift_install_cmd: "{{ forge_api_install_dir + '/bin/openshift-install' if forge_use_bastion_bins else 'openshift-install' }}"
-        csr_approver_oc_cmd: "{{ forge_api_install_dir + '/bin/oc' if forge_use_bastion_bins else 'oc' }}"
+        csr_approver_openshift_install_cmd: >-
+          {{ forge_api_install_dir ~ '/bin/openshift-install' if forge_use_bastion_bins
+             else (hostvars['localhost']['openshift_install_cmd'] | default('openshift-install')) }}
+        csr_approver_oc_cmd: >-
+          {{ forge_api_install_dir ~ '/bin/oc' if forge_use_bastion_bins
+             else (hostvars['localhost']['openshift_client_cmd'] | default('oc')) }}
+        csr_approver_ocp_ssh_identity_path: >-
+          {{ bastion_install_dir ~ '/.ocp-ssh/identity' if forge_use_bastion_bins else '' }}
       tags:
         - csr_approval
         - bootstrap
@@ -410,12 +523,16 @@
   hosts: "{{ 'bastion' if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else 'local' }}"
   gather_facts: true
   vars:
+    cluster_name: "{{ hostvars['localhost']['cluster_name'] }}"
+    base_domain: "{{ hostvars['localhost']['base_domain'] }}"
     forge_api_install_dir: "{{ bastion_install_dir if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else install_dir }}"
     forge_use_bastion_bins: "{{ (hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0 }}"
   roles:
     - role: validation
       vars:
         validation_install_dir: "{{ forge_api_install_dir }}"
-        validation_oc_cmd: "{{ forge_api_install_dir + '/bin/oc' if forge_use_bastion_bins else 'oc' }}"
+        validation_oc_cmd: >-
+          {{ forge_api_install_dir ~ '/bin/oc' if forge_use_bastion_bins
+             else (hostvars['localhost']['openshift_client_cmd'] | default('oc')) }}
       tags:
         - validation

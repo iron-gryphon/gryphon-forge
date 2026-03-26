@@ -17,6 +17,7 @@ foundry_nest_vpc_cidr: ""  # Nest VPC CIDR; when bastion is in Nest, allows API/
 foundry_bastion_security_group_id: ""
 foundry_internal_hosted_zone_id: ""
 foundry_base_domain: ""  # From foundry ocp_base_domain; when set, overrides base_domain for DNS zone alignment
+ocp_cluster_name: ""  # From foundry ocp_cluster_name; deploy_cluster maps to cluster_name when set
 foundry_region: ""
 foundry_ingress_certificate_arn: ""  # ACM cert ARN from foundry; when set, uses ALB with HTTPS
 
@@ -48,6 +49,9 @@ pull_secret_path: "{{ lookup('env', 'PULL_SECRET_PATH') | default('~/.openshift/
 
 # --- SSH Key ---
 ssh_public_key_path: "{{ lookup('env', 'SSH_PUBLIC_KEY_PATH') | default('~/.ssh/id_rsa.pub', true) }}"
+# Private key for RHCOS user core (must match ssh_public_key_path / install-config sshKey).
+# Copied to bastion at bastion_install_dir/.ocp-ssh/identity when using a bastion. Override: OCP_SSH_PRIVATE_KEY_PATH.
+ocp_ssh_private_key_path: "{{ lookup('env', 'OCP_SSH_PRIVATE_KEY_PATH') | default(ssh_public_key_path | regex_replace('\\.pub$', ''), true) }}"
 
 # --- Bastion (for API access; populated from foundry, no hardcoding) ---
 # When foundry provides bastion_public_ip/bastion_public_dns, install_dir is synced
@@ -77,10 +81,20 @@ ingress_dns_name: "*.apps.{{ cluster_name }}.{{ base_domain }}"
 # push to mirror registry reachable from Vault. See Red Hat "Mirroring images for a disconnected installation".
 mirror_registry_url: ""  # e.g. mirror.fsi.internal or mirror.fsi.internal:443
 mirror_registry_release_path: "openshift/release"  # Path where oc-mirror stores release images
-mirror_registry_additional_trust_bundle: ""  # PEM cert for self-signed registry (optional)
-# REQUIRED for disconnected: exact payload image on your mirror (digest form recommended).
-# Must match what oc-mirror placed and the openshift-install version you use (same OCP z-stream).
-# Example: mirror.fsi.internal/openshift/release@sha256:...
+# PEM for the registry CA (or self-signed server cert). Required when the mirror is not in the system trust store.
+# The serving certificate MUST include Subject Alternative Names (DNS names clients use); CN-only certs fail on RHCOS (Go TLS).
+# Generate with: scripts/generate-mirror-registry-tls.sh mirror.fsi.internal
+mirror_registry_additional_trust_bundle: ""
+# REQUIRED when mirror_registry_url is set (enforced at ignition): exact payload on your mirror (digest recommended).
+# 1) Mirror the release for your openshift-install build (same patch level as forge_ocp_mirror_channel / downloaded binary):
+#    oc adm release mirror -a ~/.docker/config.json \
+#      --from=quay.io/openshift-release-dev/ocp-release:<VERSION>-x86_64 \
+#      --to=<mirror_registry_url>/<mirror_registry_release_path> \
+#      --to-release-image=<mirror_registry_url>/<mirror_registry_release_path>:<VERSION>-x86_64
+#    (or use oc-mirror; record imageContentSources / digest from the tool output.)
+# 2) Set this variable to the mirrored release image reference, typically --to-release-image or digest form, e.g.:
+#    openshift_install_release_image_override: "mirror.fsi.internal/openshift/release@sha256:..."
+# 3) Confirm: openshift-install version default release image matches this payload.
 openshift_install_release_image_override: ""
 # Optional: extra imageContentSources / ICSP entries from oc-mirror output (operators, etc.).
 # Format: [ { source: 'registry.redhat.io/foo/bar', mirrors: ['mirror.fsi.internal/...'] }, ... ]
@@ -91,3 +105,13 @@ mirror_registry_extra_image_content_sources: []
 # Use latest-4.x for latest patch in minor version; or exact version e.g. 4.20.16
 forge_ocp_mirror_channel: "latest-{{ ocp_version }}"
 forge_ocp_mirror_base_url: "https://mirror.openshift.com/pub/openshift-v4/clients/ocp"
+# get_url SSL verify (Linux/non-macOS controller only; macOS uses /usr/bin/curl for mirror downloads).
+# Set false only if mirror TLS fails (e.g. corporate PKI). Prefer fixing the controller CA store.
+forge_ocp_mirror_validate_certs: true
+# Same URLs used by the ignition role on the controller so install state matches bastion binaries.
+forge_ocp_installer_url_linux: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-install-linux.tar.gz"
+forge_ocp_client_url_linux: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-client-linux.tar.gz"
+# Controller: leave empty to auto-download openshift-install + oc into install_dir/bin (Linux/macOS).
+# Set both to absolute paths for air-gapped controllers or unsupported OS.
+openshift_install_binary_path: ""
+openshift_client_binary_path: ""

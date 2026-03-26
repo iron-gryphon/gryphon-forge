@@ -18,7 +18,7 @@ Wraps `openshift-install` to generate OpenShift ignition configuration files for
 
 ## Prerequisites
 
-- `openshift-install` binary in `$PATH` (version matching `ocp_version`)
+- Network access to `forge_ocp_mirror_base_url` / `forge_ocp_mirror_channel` on the controller (Linux or macOS), **or** set `openshift_install_binary_path` and `openshift_client_binary_path` to absolute paths (same OCP z-stream as `ocp_version`)
 - Valid pull secret from [Red Hat OpenShift Installer-Provisioned (AWS)](https://console.redhat.com/openshift/install/aws/installer-provisioned) — download and save to `~/.openshift/pull-secret` (or set `PULL_SECRET_PATH`)
 - SSH public key for node access
 

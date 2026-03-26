@@ -1,2 +1,3 @@
 ---
 # Ignition role defaults
+# Optional paths: set openshift_install_binary_path / openshift_client_binary_path in inventory (group_vars/all.yml).
