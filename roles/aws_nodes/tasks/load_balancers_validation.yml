@@ -1,0 +1,267 @@
+---
+# Persist NLB / target-group / EC2 snapshots for post-mortem (controller + optional bastion).
+# Uses AWS API modules where possible; describe-load-balancers uses aws CLI when available.
+
+- name: Define LB validation session directory
+  ansible.builtin.set_fact:
+    aws_nodes_lb_validation_session_dir: "{{ aws_nodes_lb_validation_log_dir }}/{{ cluster_name }}-{{ ansible_facts['date_time']['epoch'] }}"
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Ensure LB validation log root exists
+  ansible.builtin.file:
+    path: "{{ aws_nodes_lb_validation_log_dir }}"
+    state: directory
+    mode: "0755"
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Ensure LB validation session directory exists
+  ansible.builtin.file:
+    path: "{{ aws_nodes_lb_validation_session_dir }}"
+    state: directory
+    mode: "0755"
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Re-describe API target group after registration (validation snapshot)
+  community.aws.elb_target_group_info:
+    names:
+      - "{{ cluster_name }}-api-tg"
+    collect_targets_health: true
+    region: "{{ foundry_region }}"
+  register: aws_nodes_lb_val_api_tg
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Write API target group and target health (JSON)
+  ansible.builtin.copy:
+    dest: "{{ aws_nodes_lb_validation_session_dir }}/api-target-group-info.json"
+    content: "{{ aws_nodes_lb_val_api_tg | to_nice_json }}"
+    mode: "0644"
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Extract API target group settings (mirrors aws describe-target-groups --query summary)
+  ansible.builtin.copy:
+    dest: "{{ aws_nodes_lb_validation_session_dir }}/api-target-group-summary.json"
+    content: "{{ _tg_summary | to_nice_json }}"
+    mode: "0644"
+  vars:
+    _tg0: "{{ (aws_nodes_lb_val_api_tg.target_groups | default([{}]))[0] }}"
+    _tg_summary:
+      Port: "{{ _tg0.port | default(none) }}"
+      Protocol: "{{ _tg0.protocol | default(none) }}"
+      HealthCheck: "{{ _tg0.health_check_path | default(none) }}"
+      HCProtocol: "{{ _tg0.health_check_protocol | default(none) }}"
+      HCPort: "{{ _tg0.health_check_port | default(none) }}"
+      Interval: "{{ _tg0.health_check_interval_seconds | default(none) }}"
+      Timeout: "{{ _tg0.health_check_timeout_seconds | default(none) }}"
+      Healthy: "{{ _tg0.healthy_threshold_count | default(none) }}"
+      Unhealthy: "{{ _tg0.unhealthy_threshold_count | default(none) }}"
+      TargetGroupArn: "{{ _tg0.target_group_arn | default(none) }}"
+      TargetType: "{{ _tg0.target_type | default(none) }}"
+      TargetsHealth: "{{ _tg0.targets_health_description | default([]) }}"
+  when: aws_nodes_lb_val_api_tg.target_groups | default([]) | length > 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Capture describe-load-balancers for API NLB (aws CLI)
+  ansible.builtin.command:
+    argv:
+      - aws
+      - elbv2
+      - describe-load-balancers
+      - --names
+      - "{{ cluster_name }}-api"
+      - --region
+      - "{{ foundry_region }}"
+      - --output
+      - json
+  register: aws_nodes_lb_val_api_nlb_cmd
+  changed_when: false
+  failed_when: false
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Write API NLB describe output
+  ansible.builtin.copy:
+    dest: "{{ aws_nodes_lb_validation_session_dir }}/api-load-balancer-describe.json"
+    content: "{{ aws_nodes_lb_val_api_nlb_cmd.stdout | default('') }}"
+    mode: "0644"
+  when: aws_nodes_lb_val_api_nlb_cmd.rc | default(1) == 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Note when aws CLI describe-load-balancers failed
+  ansible.builtin.copy:
+    dest: "{{ aws_nodes_lb_validation_session_dir }}/api-load-balancer-describe-skipped.txt"
+    content: |
+      aws elbv2 describe-load-balancers for {{ cluster_name }}-api failed or aws CLI missing.
+      rc={{ aws_nodes_lb_val_api_nlb_cmd.rc | default('n/a') }}
+      stderr={{ aws_nodes_lb_val_api_nlb_cmd.stderr | default('') | trim }}
+    mode: "0644"
+  when: aws_nodes_lb_val_api_nlb_cmd.rc | default(1) != 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Describe EC2 instances for API TG instance IDs
+  amazon.aws.ec2_instance_info:
+    filters:
+      instance-id: "{{ aws_nodes_lb_api_target_ids }}"
+    region: "{{ foundry_region }}"
+  register: aws_nodes_lb_val_ec2
+  when: aws_nodes_lb_api_target_ids | default([]) | length > 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Write EC2 summary for API targets
+  ansible.builtin.copy:
+    dest: "{{ aws_nodes_lb_validation_session_dir }}/ec2-api-target-instances.json"
+    content: "{{ aws_nodes_lb_val_ec2.instances | default([]) | to_nice_json }}"
+    mode: "0644"
+  when:
+    - aws_nodes_lb_val_ec2 is defined
+    - not (aws_nodes_lb_val_ec2.skipped | default(false))
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Write per-instance EC2 snippets (one file per ID)
+  ansible.builtin.copy:
+    dest: "{{ aws_nodes_lb_validation_session_dir }}/ec2-{{ item.instance_id }}.json"
+    content: "{{ item | to_nice_json }}"
+    mode: "0644"
+  loop: "{{ aws_nodes_lb_val_ec2.instances | default([]) }}"
+  when:
+    - aws_nodes_lb_val_ec2 is defined
+    - not (aws_nodes_lb_val_ec2.skipped | default(false))
+    - aws_nodes_lb_val_ec2.instances | default([]) | length > 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Write manual bootstrap diagnostic commands
+  ansible.builtin.copy:
+    dest: "{{ aws_nodes_lb_validation_session_dir }}/MANUAL-bootstrap-commands.sh"
+    content: |
+      #!/bin/sh
+      # Run on the bootstrap node (SSH / SSM session) after a failure.
+      sudo ss -lntp | grep 6443 || true
+      sudo lsof -iTCP:6443 -sTCP:LISTEN || true
+      sudo journalctl -u kubelet --no-pager -n 200
+      sudo journalctl -b -u ignition-fetch.service -u ignition-fetch-offline.service --no-pager
+      sudo journalctl -b | grep -iE 'ignition|fail|error' | tail -80
+      systemctl status kubelet --no-pager
+      sudo journalctl -u kubelet -b --no-pager | tail -100
+      sudo crictl ps -a || true
+      sudo ls -la /etc/kubernetes/manifests/ || true
+    mode: "0755"
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Capture bastion DNS and TCP check for api-int
+  when:
+    - aws_nodes_lb_validation_from_bastion | bool
+    - (groups['bastion'] | default([]) | length) > 0
+  block:
+    - name: Bastion — getent api-int
+      ansible.builtin.command:
+        argv:
+          - getent
+          - hosts
+          - "{{ api_int_dns_name }}"
+      register: aws_nodes_lb_val_bastion_getent
+      delegate_to: bastion
+      changed_when: false
+      failed_when: false
+      tags:
+        - aws_nodes
+        - load_balancers
+
+    - name: Bastion — TCP probe to api-int:6443
+      ansible.builtin.shell: timeout 5 bash -c 'echo >/dev/tcp/{{ api_int_dns_name }}/6443' && echo OK || echo FAIL
+      register: aws_nodes_lb_val_bastion_tcp
+      delegate_to: bastion
+      changed_when: false
+      failed_when: false
+      tags:
+        - aws_nodes
+        - load_balancers
+
+    - name: Bastion — describe bootstrap instances (aws CLI)
+      ansible.builtin.command:
+        argv:
+          - aws
+          - ec2
+          - describe-instances
+          - --region
+          - "{{ foundry_region }}"
+          - --filters
+          - "Name=tag:cluster,Values={{ cluster_name }}"
+          - "Name=tag:role,Values=bootstrap"
+          - "Name=instance-state-name,Values=running,pending,stopping,stopped"
+          - --query
+          - "Reservations[].Instances[].{Id:InstanceId,State:State.Name,PrivateIP:PrivateIpAddress,Subnet:SubnetId}"
+          - --output
+          - json
+      register: aws_nodes_lb_val_bastion_boot_ec2
+      delegate_to: bastion
+      changed_when: false
+      failed_when: false
+      tags:
+        - aws_nodes
+        - load_balancers
+
+    - name: Write bastion-side diagnostics
+      ansible.builtin.copy:
+        dest: "{{ aws_nodes_lb_validation_session_dir }}/bastion-diagnostics.txt"
+        content: |
+          === getent hosts {{ api_int_dns_name }} ===
+          rc={{ aws_nodes_lb_val_bastion_getent.rc | default('n/a') }}
+          stdout={{ aws_nodes_lb_val_bastion_getent.stdout | default('') | trim }}
+          stderr={{ aws_nodes_lb_val_bastion_getent.stderr | default('') | trim }}
+
+          === timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443" ===
+          stdout={{ aws_nodes_lb_val_bastion_tcp.stdout | default('') | trim }}
+          stderr={{ aws_nodes_lb_val_bastion_tcp.stderr | default('') | trim }}
+
+          === aws ec2 describe-instances (bootstrap) ===
+          rc={{ aws_nodes_lb_val_bastion_boot_ec2.rc | default('n/a') }}
+          stdout={{ aws_nodes_lb_val_bastion_boot_ec2.stdout | default('') | trim }}
+          stderr={{ aws_nodes_lb_val_bastion_boot_ec2.stderr | default('') | trim }}
+        mode: "0644"
+      delegate_to: localhost
+      tags:
+        - aws_nodes
+        - load_balancers
+
+- name: Display LB validation snapshot location and API target health summary
+  ansible.builtin.debug:
+    msg:
+      - "LB validation artifacts: {{ aws_nodes_lb_validation_session_dir }}"
+      - >-
+        API TG registered instance IDs:
+        {{ _api_tg_reg_ids | join(', ') if _api_tg_reg_ids | length > 0 else '(none registered)' }}
+  vars:
+    _api_tg_reg_ids: >-
+      {{
+        (aws_nodes_lb_val_api_tg.target_groups | default([{}]))[0].targets_health_description | default([])
+        | map(attribute='target')
+        | map(attribute='id')
+        | list
+      }}
+  tags:
+    - aws_nodes
+    - load_balancers

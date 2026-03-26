@@ -54,8 +54,10 @@
           - csr_approver_tg_preflight.target_groups | default([]) | length > 0
           - (csr_approver_tg_preflight.target_groups[0].targets_health_description | default([]) | length) > 0
         fail_msg: >-
-          {{ cluster_name }}-api-tg has no registered targets; the internal NLB cannot reach :6443 from the bastion.
-          Re-run: ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json --tags load_balancers
+          {{ cluster_name }}-api-tg has no registered targets; the API NLB cannot reach :6443 from the bastion.
+          Re-run: ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json
+          with --tags load_balancers (nodes already running) or --tags ec2,load_balancers (launch or fix tags, then attach).
+          In AWS: Target groups → {{ cluster_name }}-api-tg; instances need tag:cluster={{ cluster_name }}, tag:role bootstrap or master.
 
     - name: Wait until at least one API target is healthy (NLB does not forward to unhealthy targets)
       block:

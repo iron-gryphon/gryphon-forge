@@ -175,22 +175,37 @@
     - aws_nodes
     - load_balancers
 
-# Prefer IDs from ec2_instance module results (no tag-filter lag). Fallback: describe with retries
-# (AWS can take time before tag filters return newly launched instances; empty TG → api-int:6443 hangs).
+# Prefer IDs from ec2_instance module results (no tag-filter lag). Fallback: instance_id from
+# registered `instances` when `instance_ids` is empty (some collection paths). Else: describe with retries
+# (pending|running so a quick re-run still registers targets before kubelet listens).
 - name: Build API target instance IDs from EC2 launch results (this play)
   ansible.builtin.set_fact:
-    aws_nodes_lb_api_target_ids: >-
+    aws_nodes_lb_api_target_ids: "{{ _api_from_ec2 | unique | list }}"
+  vars:
+    _bootstrap_ids: "{{ aws_nodes_bootstrap_instance.instance_ids | default([]) }}"
+    _bootstrap_from_inst: "{{ aws_nodes_bootstrap_instance.instances | default([]) | map(attribute='instance_id') | list }}"
+    _master_flat: "{{ aws_nodes_master_launch.results | default([]) | map(attribute='instance_ids') | flatten | list }}"
+    _master_from_inst: >-
       {{
-        (
-          (aws_nodes_bootstrap_instance.instance_ids | default([]))
-          + ((aws_nodes_master_launch | default({})).results | default([])
-             | map(attribute='instance_ids') | flatten | list)
-        ) | unique | list
+        aws_nodes_master_launch.results | default([])
+        | map(attribute='instances')
+        | flatten
+        | map(attribute='instance_id')
+        | list
+      }}
+    _api_from_ec2: >-
+      {{
+        ((_bootstrap_ids | length > 0) | ternary(_bootstrap_ids, _bootstrap_from_inst))
+        + ((_master_flat | length > 0) | ternary(_master_flat, _master_from_inst))
       }}
   when:
     - aws_nodes_bootstrap_instance is defined
     - not (aws_nodes_bootstrap_instance.skipped | default(false))
-    - (aws_nodes_bootstrap_instance.instance_ids | default([]) | length) > 0
+    - >-
+      (
+        (aws_nodes_bootstrap_instance.instance_ids | default([]) | length) > 0
+        or (aws_nodes_bootstrap_instance.instances | default([]) | length) > 0
+      )
   tags:
     - aws_nodes
     - load_balancers
@@ -203,7 +218,9 @@
         filters:
           "tag:cluster": "{{ cluster_name }}"
           "tag:role": "bootstrap"
-          "instance-state-name": "running"
+          "instance-state-name":
+            - pending
+            - running
         region: "{{ foundry_region }}"
       register: aws_nodes_lb_bootstrap_query
       until: (aws_nodes_lb_bootstrap_query.instances | default([]) | length) > 0
@@ -218,7 +235,9 @@
         filters:
           "tag:cluster": "{{ cluster_name }}"
           "tag:role": "master"
-          "instance-state-name": "running"
+          "instance-state-name":
+            - pending
+            - running
         region: "{{ foundry_region }}"
       register: aws_nodes_lb_master_query
       until: (aws_nodes_lb_master_query.instances | default([]) | length) >= (master_count | int)
@@ -246,31 +265,154 @@
     that:
       - aws_nodes_lb_api_target_ids | length > 0
     fail_msg: >-
-      No running bootstrap/masters to attach to {{ cluster_name }}-api-tg. If nodes exist, re-run with
+      No bootstrap/masters to attach to {{ cluster_name }}-api-tg. If nodes exist, re-run with
       --tags 'ec2,load_balancers' or check tag:cluster={{ cluster_name }}, role bootstrap/master, region {{ foundry_region }}.
   tags:
     - aws_nodes
     - load_balancers
 
-- name: Register bootstrap and masters to API target group
+- name: Set bootstrap instance ID from EC2 register (MCS target group)
+  ansible.builtin.set_fact:
+    aws_nodes_lb_bootstrap_id: "{{ aws_nodes_bootstrap_instance.instance_ids[0] }}"
+  when:
+    - aws_nodes_bootstrap_instance is defined
+    - not (aws_nodes_bootstrap_instance.skipped | default(false))
+    - (aws_nodes_bootstrap_instance.instance_ids | default([]) | length) > 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Set bootstrap instance ID from EC2 instances list when instance_ids empty
+  ansible.builtin.set_fact:
+    aws_nodes_lb_bootstrap_id: "{{ aws_nodes_bootstrap_instance.instances[0].instance_id }}"
+  when:
+    - aws_nodes_lb_bootstrap_id is not defined
+    - aws_nodes_bootstrap_instance is defined
+    - not (aws_nodes_bootstrap_instance.skipped | default(false))
+    - (aws_nodes_bootstrap_instance.instances | default([]) | length) > 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Set bootstrap instance ID from discovery query
+  ansible.builtin.set_fact:
+    aws_nodes_lb_bootstrap_id: "{{ aws_nodes_lb_bootstrap_query.instances[0].instance_id }}"
+  when:
+    - aws_nodes_lb_bootstrap_id is not defined
+    - aws_nodes_lb_bootstrap_query is defined
+    - (aws_nodes_lb_bootstrap_query.instances | default([]) | length) > 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Require bootstrap instance ID for MCS target group
+  ansible.builtin.assert:
+    that:
+      - aws_nodes_lb_bootstrap_id is defined
+      - aws_nodes_lb_bootstrap_id | length > 0
+    fail_msg: >-
+      Could not resolve bootstrap instance ID for {{ cluster_name }}-mcs-tg (needed for :22623).
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Describe API target group for idempotent registration
+  community.aws.elb_target_group_info:
+    names:
+      - "{{ cluster_name }}-api-tg"
+    collect_targets_health: true
+    region: "{{ foundry_region }}"
+  register: aws_nodes_lb_api_tg_existing
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Set fact for instance IDs already registered on API target group
+  ansible.builtin.set_fact:
+    aws_nodes_lb_api_already_registered: >-
+      {{
+        (
+          (aws_nodes_lb_api_tg_existing.target_groups | default([{}]))[0].targets_health_description | default([])
+        )
+        | map(attribute='target')
+        | map(attribute='id')
+        | list
+      }}
+  when: aws_nodes_lb_api_tg_existing.target_groups | default([]) | length > 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Default empty when API target group has no registrations
+  ansible.builtin.set_fact:
+    aws_nodes_lb_api_already_registered: []
+  when: aws_nodes_lb_api_already_registered is not defined
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Register missing bootstrap and master instances on API target group
   community.aws.elb_target:
     target_group_arn: "{{ aws_nodes_api_tg.target_group_arn }}"
     target_id: "{{ item }}"
     target_port: 6443
     state: present
     region: "{{ foundry_region }}"
-  loop: "{{ aws_nodes_lb_api_target_ids }}"
+  loop: "{{ aws_nodes_lb_api_target_ids | difference(aws_nodes_lb_api_already_registered | default([])) }}"
   tags:
     - aws_nodes
     - load_balancers
 
-- name: Register bootstrap to MCS target group
+- name: Describe MCS target group for idempotent registration
+  community.aws.elb_target_group_info:
+    names:
+      - "{{ cluster_name }}-mcs-tg"
+    collect_targets_health: true
+    region: "{{ foundry_region }}"
+  register: aws_nodes_lb_mcs_tg_existing
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Set fact for instance IDs already on MCS target group
+  ansible.builtin.set_fact:
+    aws_nodes_lb_mcs_already_registered: >-
+      {{
+        (
+          (aws_nodes_lb_mcs_tg_existing.target_groups | default([{}]))[0].targets_health_description | default([])
+        )
+        | map(attribute='target')
+        | map(attribute='id')
+        | list
+      }}
+  when: aws_nodes_lb_mcs_tg_existing.target_groups | default([]) | length > 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Default empty when MCS target group has no registrations
+  ansible.builtin.set_fact:
+    aws_nodes_lb_mcs_already_registered: []
+  when: aws_nodes_lb_mcs_already_registered is not defined
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Register bootstrap to MCS target group when missing
   community.aws.elb_target:
     target_group_arn: "{{ aws_nodes_mcs_tg.target_group_arn }}"
-    target_id: "{{ aws_nodes_lb_api_target_ids[0] }}"
+    target_id: "{{ aws_nodes_lb_bootstrap_id }}"
     target_port: 22623
     state: present
     region: "{{ foundry_region }}"
+  when: aws_nodes_lb_bootstrap_id not in aws_nodes_lb_mcs_already_registered
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Capture NLB / TG validation artifacts (local directory)
+  ansible.builtin.include_tasks: load_balancers_validation.yml
+  when: aws_nodes_lb_validation_enabled | bool
   tags:
     - aws_nodes
     - load_balancers

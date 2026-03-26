@@ -81,7 +81,10 @@ ingress_dns_name: "*.apps.{{ cluster_name }}.{{ base_domain }}"
 # push to mirror registry reachable from Vault. See Red Hat "Mirroring images for a disconnected installation".
 mirror_registry_url: ""  # e.g. mirror.fsi.internal or mirror.fsi.internal:443
 mirror_registry_release_path: "openshift/release"  # Path where oc-mirror stores release images
-mirror_registry_additional_trust_bundle: ""  # PEM cert for self-signed registry (optional)
+# PEM for the registry CA (or self-signed server cert). Required when the mirror is not in the system trust store.
+# The serving certificate MUST include Subject Alternative Names (DNS names clients use); CN-only certs fail on RHCOS (Go TLS).
+# Generate with: scripts/generate-mirror-registry-tls.sh mirror.fsi.internal
+mirror_registry_additional_trust_bundle: ""
 # REQUIRED for disconnected: exact payload image on your mirror (digest form recommended).
 # Must match what oc-mirror placed and the openshift-install version you use (same OCP z-stream).
 # Example: mirror.fsi.internal/openshift/release@sha256:...

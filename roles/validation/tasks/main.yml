@@ -77,7 +77,7 @@
     mode: "0644"
     content: |
       Gryphon Forge validation report
-      Generated: {{ ansible_date_time.iso8601 | default('unknown') }}
+      Generated: {{ ansible_facts['date_time']['iso8601'] | default('unknown') }}
       Ansible host: {{ inventory_hostname }}
 
       --- oc whoami (rc={{ validation_oc_whoami.rc | default('n/a') }}) ---

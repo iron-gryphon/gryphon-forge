@@ -5,3 +5,9 @@
 # ELB target registration: retries when using EC2 describe (e.g. --tags load_balancers) — tag filters can lag after launch
 aws_nodes_lb_target_discovery_retries: 40
 aws_nodes_lb_target_discovery_delay: 8
+
+# After NLB/TG tasks, write AWS + optional bastion diagnostics under this directory (timestamped subfolder)
+aws_nodes_lb_validation_enabled: true
+aws_nodes_lb_validation_log_dir: "{{ install_dir }}/forge-lb-validation"
+# When bastion is in inventory, run DNS/TCP/bootstrap-filter checks from bastion and save stdout under the session dir
+aws_nodes_lb_validation_from_bastion: true

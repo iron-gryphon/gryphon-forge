@@ -85,6 +85,15 @@
         mirror_registry_url: >-
           {{ ((foundry | default({})).mirror_registry_url | default({}))['value']
           | default((foundry | default({})).mirror_registry_url | default(mirror_registry_url) | default('')) }}
+        mirror_registry_additional_trust_bundle: >-
+          {{
+            (
+              ((foundry | default({})).mirror_registry_additional_trust_bundle | default({}))['value']
+              | default((foundry | default({})).mirror_registry_additional_trust_bundle
+              | default(mirror_registry_additional_trust_bundle) | default(''), true)
+            )
+            | default('', true)
+          }}
       tags:
         - always
 
@@ -95,6 +104,15 @@
       when:
         - mirror_registry_url is mapping
         - (mirror_registry_url | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Normalize mirror_registry_additional_trust_bundle when in Terraform output format
+      ansible.builtin.set_fact:
+        mirror_registry_additional_trust_bundle: "{{ mirror_registry_additional_trust_bundle['value'] | default('', true) }}"
+      when:
+        - mirror_registry_additional_trust_bundle is mapping
+        - (mirror_registry_additional_trust_bundle | default({})).get('value') is defined
       tags:
         - always
 
@@ -321,11 +339,15 @@
         - csr_approval
         - validation
 
+    # ansible.cfg enables become globally; without owner/group this dir/file end up root:root
+    # (mode 0700/0600) and ec2-user cannot use -i for manual SSH to bootstrap as core.
     - name: Ensure OCP SSH key directory on bastion
       ansible.builtin.file:
         path: "{{ bastion_install_dir }}/.ocp-ssh"
         state: directory
         mode: "0700"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
       when: forge_ocp_ssh_key_stat.stat.exists | default(false)
       tags:
         - csr_approval
@@ -336,6 +358,8 @@
         src: "{{ ocp_ssh_private_key_path | expanduser }}"
         dest: "{{ bastion_install_dir }}/.ocp-ssh/identity"
         mode: "0600"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
       when: forge_ocp_ssh_key_stat.stat.exists | default(false)
       tags:
         - csr_approval
