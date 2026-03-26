@@ -38,6 +38,23 @@
   tags:
     - ignition
 
+- name: Require openshift_install_release_image_override when using a mirror registry
+  ansible.builtin.assert:
+    that:
+      - openshift_install_release_image_override | default('') | trim | length > 0
+    fail_msg: >-
+      Disconnected install: mirror_registry_url is set but openshift_install_release_image_override is empty.
+      Run oc-mirror or oc adm release mirror for the same OCP z-stream as your openshift-install binary
+      (see openshift-install version / forge_ocp_mirror_channel vs ocp_version), push the payload to
+      {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }},
+      then set openshift_install_release_image_override to the mirrored image reference (digest recommended),
+      e.g. {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}@sha256:...
+      See inventory/group_vars/all.yml and scripts/print-disconnected-release-reference.sh.
+  when: ignition_mirror_registry_url_resolved | default('') | length > 0
+  tags:
+    - ignition
+    - config
+
 - name: Resolve pull secret path
   ansible.builtin.set_fact:
     ignition_pull_secret_resolved: "{{ pull_secret_path | expanduser }}"

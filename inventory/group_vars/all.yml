@@ -85,9 +85,16 @@ mirror_registry_release_path: "openshift/release"  # Path where oc-mirror stores
 # The serving certificate MUST include Subject Alternative Names (DNS names clients use); CN-only certs fail on RHCOS (Go TLS).
 # Generate with: scripts/generate-mirror-registry-tls.sh mirror.fsi.internal
 mirror_registry_additional_trust_bundle: ""
-# REQUIRED for disconnected: exact payload image on your mirror (digest form recommended).
-# Must match what oc-mirror placed and the openshift-install version you use (same OCP z-stream).
-# Example: mirror.fsi.internal/openshift/release@sha256:...
+# REQUIRED when mirror_registry_url is set (enforced at ignition): exact payload on your mirror (digest recommended).
+# 1) Mirror the release for your openshift-install build (same patch level as forge_ocp_mirror_channel / downloaded binary):
+#    oc adm release mirror -a ~/.docker/config.json \
+#      --from=quay.io/openshift-release-dev/ocp-release:<VERSION>-x86_64 \
+#      --to=<mirror_registry_url>/<mirror_registry_release_path> \
+#      --to-release-image=<mirror_registry_url>/<mirror_registry_release_path>:<VERSION>-x86_64
+#    (or use oc-mirror; record imageContentSources / digest from the tool output.)
+# 2) Set this variable to the mirrored release image reference, typically --to-release-image or digest form, e.g.:
+#    openshift_install_release_image_override: "mirror.fsi.internal/openshift/release@sha256:..."
+# 3) Confirm: openshift-install version default release image matches this payload.
 openshift_install_release_image_override: ""
 # Optional: extra imageContentSources / ICSP entries from oc-mirror output (operators, etc.).
 # Format: [ { source: 'registry.redhat.io/foo/bar', mirrors: ['mirror.fsi.internal/...'] }, ... ]

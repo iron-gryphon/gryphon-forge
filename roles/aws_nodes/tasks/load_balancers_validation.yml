@@ -171,6 +171,32 @@
     - aws_nodes
     - load_balancers
 
+# Bootstrap EC2 snapshot uses controller credentials (bastion has no AWS CLI auth).
+- name: Describe bootstrap instance for validation snapshot (controller)
+  amazon.aws.ec2_instance_info:
+    filters:
+      "tag:cluster": "{{ cluster_name }}"
+      "tag:role": "bootstrap"
+      "instance-state-name":
+        - pending
+        - running
+        - stopping
+        - stopped
+    region: "{{ foundry_region }}"
+  register: aws_nodes_lb_val_bootstrap_local
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Write bootstrap instance snapshot from controller (JSON)
+  ansible.builtin.copy:
+    dest: "{{ aws_nodes_lb_validation_session_dir }}/bootstrap-instance-local.json"
+    content: "{{ aws_nodes_lb_val_bootstrap_local.instances | default([]) | to_nice_json }}"
+    mode: "0644"
+  tags:
+    - aws_nodes
+    - load_balancers
+
 - name: Capture bastion DNS and TCP check for api-int
   when:
     - aws_nodes_lb_validation_from_bastion | bool
@@ -200,30 +226,6 @@
         - aws_nodes
         - load_balancers
 
-    - name: Bastion — describe bootstrap instances (aws CLI)
-      ansible.builtin.command:
-        argv:
-          - aws
-          - ec2
-          - describe-instances
-          - --region
-          - "{{ foundry_region }}"
-          - --filters
-          - "Name=tag:cluster,Values={{ cluster_name }}"
-          - "Name=tag:role,Values=bootstrap"
-          - "Name=instance-state-name,Values=running,pending,stopping,stopped"
-          - --query
-          - "Reservations[].Instances[].{Id:InstanceId,State:State.Name,PrivateIP:PrivateIpAddress,Subnet:SubnetId}"
-          - --output
-          - json
-      register: aws_nodes_lb_val_bastion_boot_ec2
-      delegate_to: bastion
-      changed_when: false
-      failed_when: false
-      tags:
-        - aws_nodes
-        - load_balancers
-
     - name: Write bastion-side diagnostics
       ansible.builtin.copy:
         dest: "{{ aws_nodes_lb_validation_session_dir }}/bastion-diagnostics.txt"
@@ -236,11 +238,6 @@
           === timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443" ===
           stdout={{ aws_nodes_lb_val_bastion_tcp.stdout | default('') | trim }}
           stderr={{ aws_nodes_lb_val_bastion_tcp.stderr | default('') | trim }}
-
-          === aws ec2 describe-instances (bootstrap) ===
-          rc={{ aws_nodes_lb_val_bastion_boot_ec2.rc | default('n/a') }}
-          stdout={{ aws_nodes_lb_val_bastion_boot_ec2.stdout | default('') | trim }}
-          stderr={{ aws_nodes_lb_val_bastion_boot_ec2.stderr | default('') | trim }}
         mode: "0644"
       delegate_to: localhost
       tags:
