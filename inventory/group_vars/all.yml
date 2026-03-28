@@ -96,6 +96,15 @@ mirror_registry_additional_trust_bundle: ""
 #    openshift_install_release_image_override: "mirror.fsi.internal/openshift/release@sha256:..."
 # 3) Confirm: openshift-install version default release image matches this payload.
 openshift_install_release_image_override: ""
+# When mirror + override are set: verify digest with oc image info before openshift-install (bastion if present, else controller).
+ignition_mirror_release_image_check_enabled: true
+# Default: {{ install_dir }}/mirror-release-image-check.txt on the controller; set to override path.
+ignition_mirror_release_image_check_result_path: ""
+# When true (default): list tags on mirror openshift/release, pick highest X.Y.Z-<arch> for ocp_version minor,
+# set openshift_install_release_image_override to registry/path:tag. Conflicts with manual override; requires jq (+ curl or skopeo). Set false to pin openshift_install_release_image_override manually.
+ignition_mirror_discover_release_tag: true
+ignition_mirror_discover_release_arch: x86_64
+ignition_mirror_discover_delegate_to_bastion: true
 # Optional: extra imageContentSources / ICSP entries from oc-mirror output (operators, etc.).
 # Format: [ { source: 'registry.redhat.io/foo/bar', mirrors: ['mirror.fsi.internal/...'] }, ... ]
 mirror_registry_extra_image_content_sources: []

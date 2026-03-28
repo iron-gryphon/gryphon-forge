@@ -1,0 +1,134 @@
+---
+# Optional: set openshift_install_release_image_override from highest tag matching ocp_version minor (e.g. 4.20.*-x86_64).
+# Requires jq on the host that runs the script; skopeo optional (curl fallback). See scripts/discover-mirror-release-tag.sh.
+- name: Resolve trust bundle for mirror discovery TLS (optional)
+  ansible.builtin.set_fact:
+    ignition_mirror_trust_bundle_resolved: >-
+      {{ (mirror_registry_additional_trust_bundle['value'] if (mirror_registry_additional_trust_bundle is mapping
+         and (mirror_registry_additional_trust_bundle | default({})).get('value') is defined)
+         else (mirror_registry_additional_trust_bundle | default(''))) | trim }}
+
+- name: Normalize OCP minor for tag discovery
+  ansible.builtin.assert:
+    that: ocp_version.split('.') | length >= 2
+    fail_msg: >-
+      ocp_version must include a minor (e.g. 4.20) when ignition_mirror_discover_release_tag is true.
+      Current value: {{ ocp_version }}
+
+- name: Set OCP minor string for discovery
+  ansible.builtin.set_fact:
+    ignition_ocp_minor_for_discover: "{{ ocp_version.split('.')[:2] | join('.') }}"
+
+- name: Strip scheme from mirror registry host for discovery API
+  ansible.builtin.set_fact:
+    ignition_mirror_registry_host_for_discovery: "{{ ignition_mirror_registry_url_resolved | regex_replace('^https?://', '') | trim }}"
+
+- name: Decide whether to run discovery on bastion
+  ansible.builtin.set_fact:
+    ignition_mirror_discover_on_bastion: >-
+      {{ (ignition_mirror_discover_delegate_to_bastion | default(true) | bool)
+         and (groups['bastion'] | default([]) | length > 0) }}
+
+- name: Copy pull secret to bastion for mirror tag discovery
+  ansible.builtin.copy:
+    src: "{{ ignition_pull_secret_resolved }}"
+    dest: /var/tmp/gryphon-forge-pull-secret-discover
+    mode: "0600"
+  when: ignition_mirror_discover_on_bastion | bool
+
+- name: Write mirror CA for discovery on bastion
+  ansible.builtin.copy:
+    content: "{{ ignition_mirror_trust_bundle_resolved }}"
+    dest: /var/tmp/gryphon-forge-mirror-ca-discover.pem
+    mode: "0644"
+  when:
+    - ignition_mirror_discover_on_bastion | bool
+    - ignition_mirror_trust_bundle_resolved | length > 0
+
+- name: Write mirror CA for discovery on controller
+  ansible.builtin.copy:
+    content: "{{ ignition_mirror_trust_bundle_resolved }}"
+    dest: /var/tmp/gryphon-forge-mirror-ca-discover.pem
+    mode: "0644"
+  when:
+    - not (ignition_mirror_discover_on_bastion | bool)
+    - ignition_mirror_trust_bundle_resolved | length > 0
+
+- name: Set pull secret path for discovery script (bastion)
+  ansible.builtin.set_fact:
+    ignition_pull_secret_path_for_discovery: /var/tmp/gryphon-forge-pull-secret-discover
+  when: ignition_mirror_discover_on_bastion | bool
+
+- name: Set pull secret path for discovery script (controller)
+  ansible.builtin.set_fact:
+    ignition_pull_secret_path_for_discovery: "{{ ignition_pull_secret_resolved }}"
+  when: not (ignition_mirror_discover_on_bastion | bool)
+
+- name: Build argv for discover script
+  ansible.builtin.set_fact:
+    ignition_mirror_discover_argv: "{{ _base + _ca }}"
+  vars:
+    _base:
+      - /bin/bash
+      - "{{ role_path }}/../../scripts/discover-mirror-release-tag.sh"
+      - --registry
+      - "{{ ignition_mirror_registry_host_for_discovery }}"
+      - --repo
+      - "{{ mirror_registry_release_path | default('openshift/release') }}"
+      - --minor
+      - "{{ ignition_ocp_minor_for_discover }}"
+      - --arch
+      - "{{ ignition_mirror_discover_release_arch }}"
+      - --pull-secret
+      - "{{ ignition_pull_secret_path_for_discovery }}"
+    _ca: "{{ ['--ca-file', '/var/tmp/gryphon-forge-mirror-ca-discover.pem'] if ignition_mirror_trust_bundle_resolved | length > 0 else [] }}"
+
+- name: Run mirror release tag discovery on bastion
+  ansible.builtin.command:
+    argv: "{{ ignition_mirror_discover_argv }}"
+  register: ignition_mirror_discover_script
+  changed_when: false
+  delegate_to: bastion
+  run_once: true
+  when: ignition_mirror_discover_on_bastion | bool
+
+- name: Run mirror release tag discovery on controller
+  ansible.builtin.command:
+    argv: "{{ ignition_mirror_discover_argv }}"
+  register: ignition_mirror_discover_script
+  changed_when: false
+  when: not (ignition_mirror_discover_on_bastion | bool)
+
+- name: Apply discovered release image to localhost facts  # noqa: var-naming[no-role-prefix]
+  ansible.builtin.set_fact:
+    ignition_mirror_discovered_tag: "{{ ignition_mirror_discover_script.stdout | trim }}"
+    openshift_install_release_image_override: >-
+      {{ ignition_mirror_registry_url_resolved ~ '/' ~
+      (mirror_registry_release_path | default('openshift/release')) ~ ':' ~
+      (ignition_mirror_discover_script.stdout | trim) }}
+  delegate_to: localhost
+  connection: local
+
+- name: Remove pull secret copy on bastion after discovery
+  ansible.builtin.file:
+    path: /var/tmp/gryphon-forge-pull-secret-discover
+    state: absent
+  when: ignition_mirror_discover_on_bastion | bool
+
+- name: Remove mirror CA temp on bastion after discovery
+  ansible.builtin.file:
+    path: /var/tmp/gryphon-forge-mirror-ca-discover.pem
+    state: absent
+  when:
+    - ignition_mirror_discover_on_bastion | bool
+    - ignition_mirror_trust_bundle_resolved | length > 0
+
+- name: Remove mirror CA temp on controller after discovery
+  ansible.builtin.file:
+    path: /var/tmp/gryphon-forge-mirror-ca-discover.pem
+    state: absent
+  when:
+    - not (ignition_mirror_discover_on_bastion | bool)
+    - ignition_mirror_trust_bundle_resolved | length > 0
+  delegate_to: localhost
+  connection: local

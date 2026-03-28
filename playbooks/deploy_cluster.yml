@@ -263,6 +263,49 @@
         - config
         - ignition
 
+# Disconnected: confirm openshift_install_release_image_override exists on the mirror before openshift-install.
+# Runs on bastion when foundry provides bastion (Vault can reach the private registry); otherwise the ignition role checks from the controller.
+- name: Verify mirrored release image from bastion (preflight)
+  hosts: bastion
+  gather_facts: false
+  tags:
+    - ignition
+    - config
+  tasks:
+    - name: Resolve mirror registry URL on localhost for preflight
+      ansible.builtin.set_fact:
+        ignition_preflight_mirror_url: >-
+          {{ (hostvars['localhost']['mirror_registry_url']['value'] if (hostvars['localhost']['mirror_registry_url'] is mapping
+             and (hostvars['localhost']['mirror_registry_url'] | default({})).get('value') is defined)
+             else (hostvars['localhost']['mirror_registry_url'] | default(''))) | trim }}
+      delegate_to: localhost
+      connection: local
+      run_once: true
+
+    - name: Compute whether mirror preflight should run from bastion
+      ansible.builtin.set_fact:
+        ignition_mirror_preflight_should_run: >-
+          {{ (hostvars['localhost']['ignition_preflight_mirror_url'] | default('') | length > 0)
+             and (hostvars['localhost']['openshift_install_release_image_override'] | default('') | trim | length > 0)
+             and (hostvars['localhost']['ignition_mirror_release_image_check_enabled'] | default(true) | bool) }}
+      delegate_to: localhost
+      connection: local
+      run_once: true
+
+    - name: Include mirror release image check from bastion  # noqa: var-naming[no-role-prefix]
+      ansible.builtin.include_role:
+        name: ignition
+        tasks_from: mirror_release_image_check.yml
+      vars:
+        ignition_mirror_release_image_check_from_bastion: true
+        openshift_install_release_image_override: "{{ hostvars['localhost']['openshift_install_release_image_override'] }}"
+        pull_secret_path: "{{ hostvars['localhost']['pull_secret_path'] }}"
+        install_dir: "{{ hostvars['localhost']['install_dir'] }}"
+        mirror_registry_additional_trust_bundle: "{{ hostvars['localhost']['mirror_registry_additional_trust_bundle'] | default('') }}"
+        bastion_install_dir: "{{ bastion_install_dir }}"
+        ignition_mirror_release_image_check_result_path: "{{ hostvars['localhost']['install_dir'] }}/mirror-release-image-check.txt"
+      when: hostvars['localhost']['ignition_mirror_preflight_should_run'] | default(false) | bool
+
 - name: Ignition Generation - Fetch pull secrets and generate ignition files
   hosts: local
   gather_facts: true

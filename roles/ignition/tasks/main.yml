@@ -38,23 +38,6 @@
   tags:
     - ignition
 
-- name: Require openshift_install_release_image_override when using a mirror registry
-  ansible.builtin.assert:
-    that:
-      - openshift_install_release_image_override | default('') | trim | length > 0
-    fail_msg: >-
-      Disconnected install: mirror_registry_url is set but openshift_install_release_image_override is empty.
-      Run oc-mirror or oc adm release mirror for the same OCP z-stream as your openshift-install binary
-      (see openshift-install version / forge_ocp_mirror_channel vs ocp_version), push the payload to
-      {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }},
-      then set openshift_install_release_image_override to the mirrored image reference (digest recommended),
-      e.g. {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}@sha256:...
-      See inventory/group_vars/all.yml and scripts/print-disconnected-release-reference.sh.
-  when: ignition_mirror_registry_url_resolved | default('') | length > 0
-  tags:
-    - ignition
-    - config
-
 - name: Resolve pull secret path
   ansible.builtin.set_fact:
     ignition_pull_secret_resolved: "{{ pull_secret_path | expanduser }}"
@@ -74,6 +57,71 @@
   when: not ignition_pull_secret_stat.stat.exists
   tags:
     - ignition
+
+- name: Fail when mirror tag discovery is enabled without mirror_registry_url
+  ansible.builtin.fail:
+    msg: >-
+      ignition_mirror_discover_release_tag is true but mirror_registry_url is empty.
+      Set mirror_registry_url or disable ignition_mirror_discover_release_tag.
+  when:
+    - ignition_mirror_discover_release_tag | default(false) | bool
+    - ignition_mirror_registry_url_resolved | default('') | length == 0
+  tags:
+    - ignition
+    - config
+
+- name: Fail when mirror tag discovery conflicts with manual openshift_install_release_image_override
+  ansible.builtin.fail:
+    msg: >-
+      Set either ignition_mirror_discover_release_tag: true (discover highest tag on mirror) OR
+      openshift_install_release_image_override (manual digest/tag), not both.
+      Clear openshift_install_release_image_override or set ignition_mirror_discover_release_tag: false.
+  when:
+    - ignition_mirror_discover_release_tag | default(false) | bool
+    - openshift_install_release_image_override | default('') | trim | length > 0
+  tags:
+    - ignition
+    - config
+
+- name: Discover openshift_install_release_image_override tag from mirror registry
+  ansible.builtin.include_tasks: mirror_discover_release_tag.yml
+  when:
+    - ignition_mirror_registry_url_resolved | default('') | length > 0
+    - ignition_mirror_discover_release_tag | default(false) | bool
+  tags:
+    - ignition
+    - config
+
+- name: Require openshift_install_release_image_override when using a mirror registry
+  ansible.builtin.assert:
+    that:
+      - openshift_install_release_image_override | default('') | trim | length > 0
+    fail_msg: >-
+      Disconnected install: mirror_registry_url is set but openshift_install_release_image_override is empty.
+      Either set openshift_install_release_image_override to the mirrored release (digest recommended), or set
+      ignition_mirror_discover_release_tag: true to pick the highest tag matching ocp_version on the mirror (see inventory).
+      Manual: oc-mirror / oc adm release mirror to
+      {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}.
+      See inventory/group_vars/all.yml and scripts/print-disconnected-release-reference.sh.
+  when:
+    - ignition_mirror_registry_url_resolved | default('') | length > 0
+    - not (ignition_mirror_discover_release_tag | default(false) | bool)
+  tags:
+    - ignition
+    - config
+
+- name: Verify mirrored release image from controller when bastion did not run preflight
+  ansible.builtin.include_tasks: mirror_release_image_check.yml
+  vars:
+    ignition_mirror_release_image_check_from_bastion: false
+  when:
+    - ignition_mirror_registry_url_resolved | default('') | length > 0
+    - openshift_install_release_image_override | default('') | trim | length > 0
+    - ignition_mirror_release_image_check_enabled | default(true) | bool
+    - not (hostvars['localhost']['ignition_mirror_preflight_completed'] | default(false) | bool)
+  tags:
+    - ignition
+    - config
 
 - name: Resolve SSH public key path
   ansible.builtin.set_fact:
