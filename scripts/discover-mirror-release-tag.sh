@@ -71,6 +71,26 @@ command -v jq >/dev/null 2>&1 || {
 MINOR_ESC="${MINOR//./\\.}"
 PATTERN="^${MINOR_ESC}\\.[0-9]+-${ARCH}$"
 
+# Docker config.json auths keys vary: host, host:443, host:5000, etc.
+resolve_registry_auth() {
+  local ps="$1" reg="$2"
+  local base="${reg%%:*}"
+  local k a
+  for k in "$reg" "${base}:443" "${base}:5000" "${base}"; do
+    a="$(jq -r --arg k "$k" '.auths[$k].auth // empty' "$ps" 2>/dev/null || true)"
+    if [[ -n "$a" ]]; then
+      printf '%s' "$a"
+      return 0
+    fi
+  done
+  jq -r --arg b "$base" '
+    [.auths | to_entries[]
+      | select(.key == $b or (.key | startswith($b + ":")) or (.key | startswith($b + "/")))
+      | .value.auth]
+    | map(select(length > 0)) | first // empty
+  ' "$ps" 2>/dev/null
+}
+
 discover_via_skopeo() {
   command -v skopeo >/dev/null 2>&1 || return 1
   local img="docker://${REGISTRY}/${REPO}"
@@ -84,9 +104,7 @@ discover_via_skopeo() {
 
 discover_via_curl() {
   local auth
-  auth="$(jq -r --arg h "${REGISTRY}" \
-    '.auths[$h].auth // .auths[$h + ":443"].auth // .auths[$h + ":5000"].auth // empty' \
-    "${PULL_SECRET}")"
+  auth="$(resolve_registry_auth "${PULL_SECRET}" "${REGISTRY}")"
   local url="https://${REGISTRY}/v2/${REPO}/tags/list?n=10000"
   local -a curl_opts=(-fsS)
   if [[ -n "${CA_FILE}" && -f "${CA_FILE}" ]]; then
@@ -95,7 +113,17 @@ discover_via_curl() {
   if [[ -n "${auth}" ]]; then
     curl_opts+=(-H "Authorization: Basic ${auth}")
   fi
-  curl "${curl_opts[@]}" "${url}"
+  local out
+  if ! out="$(curl "${curl_opts[@]}" "${url}" 2>&1)"; then
+    echo "mirror tag discovery failed: GET ${url}" >&2
+    if [[ -z "${auth}" ]]; then
+      echo "No auth found in pull secret for registry host ${REGISTRY} (check .auths keys match your mirror)." >&2
+    fi
+    echo "${out}" >&2
+    echo "If you see HTTP 404: set mirror_registry_release_path to the release repository path on your mirror (must match oc-mirror or oc adm release mirror --to)." >&2
+    exit 1
+  fi
+  printf '%s' "${out}"
 }
 
 JSON=""

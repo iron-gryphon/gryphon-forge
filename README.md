@@ -200,7 +200,7 @@ ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json -e ec2_key
    ```
    See [Red Hat disconnected install docs](https://docs.openshift.com/container-platform/4.15/installing/disconnected_install/installing-mirroring-disconnected.html).
 
-3. **Add mirror registry to pull secret** — Include the mirror registry credentials in your pull secret (merge with Red Hat pull secret).
+3. **Add mirror registry to pull secret** — The Red Hat pull secret does not include your private mirror. Merge mirror `auths` into the same JSON you use for installs (see **Iron Gryphon** air-gapped setup in the team profile README: merge on the **bastion** with `oc registry login` or `podman login` to a temp `--authfile`, then `jq` **only** the `auths` maps—`{auths: ($a.auths * $b.auths)}`—not a top-level merge that drops Red Hat entries). Copy the merged file to your Ansible controller and set `PULL_SECRET_PATH`, or set **`mirror_registry_dockerconfig_extra_path`** in Forge to a mirror-only dockerconfig for tag discovery only.
 
 4. **Deploy with mirror** — Pass `mirror_registry_url` (from foundry output or `-e`):
    ```bash

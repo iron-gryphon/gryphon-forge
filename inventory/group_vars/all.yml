@@ -80,11 +80,14 @@ ingress_dns_name: "*.apps.{{ cluster_name }}.{{ base_domain }}"
 # Workflow: run oc-mirror on an internet-connected host → mirror or disk → transfer into env →
 # push to mirror registry reachable from Vault. See Red Hat "Mirroring images for a disconnected installation".
 mirror_registry_url: ""  # e.g. mirror.fsi.internal or mirror.fsi.internal:443
-mirror_registry_release_path: "openshift/release"  # Path where oc-mirror stores release images
+# Must match the repository path on the mirror (same as oc-mirror / oc adm release mirror --to); tag discovery calls GET /v2/<path>/tags/list.
+mirror_registry_release_path: "openshift/release"
 # PEM for the registry CA (or self-signed server cert). Required when the mirror is not in the system trust store.
 # The serving certificate MUST include Subject Alternative Names (DNS names clients use); CN-only certs fail on RHCOS (Go TLS).
 # Generate with: scripts/generate-mirror-registry-tls.sh mirror.fsi.internal
 mirror_registry_additional_trust_bundle: ""
+# Optional: docker config JSON ({"auths":{...}}) with credentials for mirror_registry_url. Merged with pull_secret_path for tag discovery only if the mirror is not already in the Red Hat pull secret.
+mirror_registry_dockerconfig_extra_path: ""
 # REQUIRED when mirror_registry_url is set (enforced at ignition): exact payload on your mirror (digest recommended).
 # 1) Mirror the release for your openshift-install build (same patch level as forge_ocp_mirror_channel / downloaded binary):
 #    oc adm release mirror -a ~/.docker/config.json \
