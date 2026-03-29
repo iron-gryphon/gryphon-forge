@@ -31,7 +31,8 @@ Provisions EC2 instances, internal Load Balancers (NLB/ALB), and Route53 DNS rec
 3. **Security Groups**: Create SGs for bootstrap, masters, workers
 4. **EC2 Instances**: Launch bootstrap, master, worker, and optional GPU worker nodes
 5. **Load Balancers**: Create internal NLBs for API (6443) and Machine Config Server (22623), ALB for ingress (443/80). NLBs enable **cross-zone load balancing** so traffic to any AZ’s NLB node can reach the bootstrap in a single subnet (required until control plane serves 6443 in every AZ). Bootstrap and masters are registered on the API target group using **instance IDs from the EC2 launch tasks** (avoids tag-filter lag on a fresh apply). If you run only `--tags load_balancers`, registration uses `ec2_instance_info` with retries until nodes appear.
-6. **Route53**: Register api, api-int, and *.apps records
+6. **Route53**: Register api, api-int, and *.apps records (aliases to the API NLB and ingress LB) in `foundry_internal_hosted_zone_id`.
+7. **LB validation snapshot** (when `aws_nodes_lb_validation_enabled`): Writes `forge-lb-validation/...` artifacts and optional bastion DNS/TCP checks — runs **after** Route53 so `api-int` resolves during diagnostics on a full `aws_nodes` run.
 
 ## Idempotency
 

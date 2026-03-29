@@ -410,9 +410,4 @@
     - aws_nodes
     - load_balancers
 
-- name: Capture NLB / TG validation artifacts (local directory)
-  ansible.builtin.include_tasks: load_balancers_validation.yml
-  when: aws_nodes_lb_validation_enabled | bool
-  tags:
-    - aws_nodes
-    - load_balancers
+# NLB/TG validation runs from main.yml after route53.yml so api-int exists before bastion DNS probes.

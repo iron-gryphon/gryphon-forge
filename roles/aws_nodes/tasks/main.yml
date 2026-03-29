@@ -30,3 +30,11 @@
   tags:
     - aws_nodes
     - route53
+
+# After api/api-int/*.apps records exist in the private zone (Forge), bastion getent/TCP checks are meaningful.
+- name: Capture NLB / TG validation artifacts (local directory)
+  ansible.builtin.include_tasks: load_balancers_validation.yml
+  when: aws_nodes_lb_validation_enabled | bool
+  tags:
+    - aws_nodes
+    - load_balancers

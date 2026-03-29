@@ -1,6 +1,9 @@
 ---
 # Persist NLB / target-group / EC2 snapshots for post-mortem (controller + optional bastion).
 # Uses AWS API modules where possible; describe-load-balancers uses aws CLI when available.
+#
+# Invoked from main.yml after route53.yml so api-int.<cluster>.<domain> exists in Route53 before
+# bastion-side getent/TCP probes (avoid false NXDOMAIN in bastion-diagnostics.txt).
 
 - name: Define LB validation session directory
   ansible.builtin.set_fact:
