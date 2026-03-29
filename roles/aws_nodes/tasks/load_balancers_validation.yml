@@ -226,6 +226,51 @@
         - aws_nodes
         - load_balancers
 
+    - name: Bastion — routing to bootstrap private IP (Nest→Vault peering)
+      ansible.builtin.command:
+        argv:
+          - ip
+          - route
+          - get
+          - "{{ aws_nodes_lb_val_bootstrap_local.instances[0].private_ip_address }}"
+      register: aws_nodes_lb_val_bastion_route_bootstrap
+      delegate_to: bastion
+      changed_when: false
+      failed_when: false
+      when:
+        - aws_nodes_lb_val_bootstrap_local.instances | default([]) | length > 0
+      tags:
+        - aws_nodes
+        - load_balancers
+
+    - name: Bastion — TCP probe bootstrap:22 (SSH before ssh(1) auth)
+      ansible.builtin.shell: >-
+        timeout 5 bash -c 'echo >/dev/tcp/{{ aws_nodes_lb_val_bootstrap_local.instances[0].private_ip_address }}/22'
+        && echo OK || echo FAIL
+      register: aws_nodes_lb_val_bastion_tcp_bootstrap_ssh
+      delegate_to: bastion
+      changed_when: false
+      failed_when: false
+      when:
+        - aws_nodes_lb_val_bootstrap_local.instances | default([]) | length > 0
+      tags:
+        - aws_nodes
+        - load_balancers
+
+    - name: Bastion — TCP probe bootstrap:6443 (same path as NLB from Vault perspective differs; peering path check)
+      ansible.builtin.shell: >-
+        timeout 5 bash -c 'echo >/dev/tcp/{{ aws_nodes_lb_val_bootstrap_local.instances[0].private_ip_address }}/6443'
+        && echo OK || echo FAIL
+      register: aws_nodes_lb_val_bastion_tcp_bootstrap_api
+      delegate_to: bastion
+      changed_when: false
+      failed_when: false
+      when:
+        - aws_nodes_lb_val_bootstrap_local.instances | default([]) | length > 0
+      tags:
+        - aws_nodes
+        - load_balancers
+
     - name: Write bastion-side diagnostics
       ansible.builtin.copy:
         dest: "{{ aws_nodes_lb_validation_session_dir }}/bastion-diagnostics.txt"
@@ -238,6 +283,21 @@
           === timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443" ===
           stdout={{ aws_nodes_lb_val_bastion_tcp.stdout | default('') | trim }}
           stderr={{ aws_nodes_lb_val_bastion_tcp.stderr | default('') | trim }}
+
+          {% if aws_nodes_lb_val_bootstrap_local.instances | default([]) | length > 0 %}
+          === ip route get {{ aws_nodes_lb_val_bootstrap_local.instances[0].private_ip_address }} (bootstrap) ===
+          rc={{ aws_nodes_lb_val_bastion_route_bootstrap.rc | default('n/a') }}
+          stdout={{ aws_nodes_lb_val_bastion_route_bootstrap.stdout | default('') | trim }}
+          stderr={{ aws_nodes_lb_val_bastion_route_bootstrap.stderr | default('') | trim }}
+
+          === TCP bootstrap:22 (SSH SYN path) ===
+          stdout={{ aws_nodes_lb_val_bastion_tcp_bootstrap_ssh.stdout | default('') | trim }}
+          stderr={{ aws_nodes_lb_val_bastion_tcp_bootstrap_ssh.stderr | default('') | trim }}
+
+          === TCP bootstrap:6443 from bastion (optional; SG may deny non-Vault sources) ===
+          stdout={{ aws_nodes_lb_val_bastion_tcp_bootstrap_api.stdout | default('') | trim }}
+          stderr={{ aws_nodes_lb_val_bastion_tcp_bootstrap_api.stderr | default('') | trim }}
+          {% endif %}
         mode: "0644"
       delegate_to: localhost
       tags:
