@@ -4,3 +4,5 @@
 
 # Optional JSON (docker config style) with {"auths":{...}} for the private mirror only; merged with pull_secret_path for tag discovery.
 mirror_registry_dockerconfig_extra_path: ""  # noqa: var-naming[no-role-prefix]
+# Registry API scheme for discover-mirror-release-tag.sh (curl /v2/.../tags/list); use http only for plain-HTTP mirrors.
+mirror_registry_discovery_scheme: "https"  # noqa: var-naming[no-role-prefix]

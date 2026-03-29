@@ -31,10 +31,11 @@
 # Unwrap Terraform output format ({sensitive, type, value}) when passed via -e @foundry_output.json
 - name: Resolve mirror_registry_url (unwrap Terraform output format)
   ansible.builtin.set_fact:
+    # Strip optional https:// — unquoted "https://host/..." in install-config YAML is parsed as a mapping (https: key).
     ignition_mirror_registry_url_resolved: >-
       {{ (mirror_registry_url['value'] if (mirror_registry_url is mapping
          and (mirror_registry_url | default({})).get('value') is defined)
-         else (mirror_registry_url | default(''))) | trim }}
+         else (mirror_registry_url | default(''))) | trim | regex_replace('^https?://', '') }}
   tags:
     - ignition
 
@@ -102,7 +103,7 @@
       ignition_mirror_discover_release_tag: true to pick the highest tag matching ocp_version on the mirror (see inventory).
       Manual: oc-mirror / oc adm release mirror to
       {{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}.
-      See inventory/group_vars/all.yml and scripts/print-disconnected-release-reference.sh.
+      See inventory/group_vars/all.yml (Disconnected Install / mirror_registry_* variables).
   when:
     - ignition_mirror_registry_url_resolved | default('') | length > 0
     - not (ignition_mirror_discover_release_tag | default(false) | bool)
@@ -113,7 +114,8 @@
 - name: Verify mirrored release image from controller when bastion did not run preflight
   ansible.builtin.include_tasks: mirror_release_image_check.yml
   vars:
-    ignition_mirror_release_image_check_from_bastion: false
+    # Private registry DNS (e.g. mirror.fsi.internal) is only resolvable from the VPC; use bastion when present.
+    ignition_mirror_release_image_check_from_bastion: "{{ (groups['bastion'] | default([]) | length > 0) | bool }}"
   when:
     - ignition_mirror_registry_url_resolved | default('') | length > 0
     - openshift_install_release_image_override | default('') | trim | length > 0
@@ -203,12 +205,25 @@
   tags:
     - ignition
 
-- name: Add ImageContentSourcePolicy manifest (disconnected install)
+- name: Add ImageDigestMirrorSet manifest (disconnected install)
+  ansible.builtin.template:
+    src: image-digest-mirror-set.yaml.j2
+    dest: "{{ install_dir }}/manifests/image-digest-mirror-set.yaml"
+    mode: "0644"
+  when:
+    - ignition_mirror_registry_url_resolved | default('') | length > 0
+    - mirror_registry_use_image_digest_sources | default(true) | bool
+  tags:
+    - ignition
+
+- name: Add ImageContentSourcePolicy manifest (disconnected install, legacy)
   ansible.builtin.template:
     src: image-content-source-policy.yaml.j2
     dest: "{{ install_dir }}/manifests/image-content-source-policy.yaml"
     mode: "0644"
-  when: ignition_mirror_registry_url_resolved | default('') | length > 0
+  when:
+    - ignition_mirror_registry_url_resolved | default('') | length > 0
+    - not (mirror_registry_use_image_digest_sources | default(true) | bool)
   tags:
     - ignition
 

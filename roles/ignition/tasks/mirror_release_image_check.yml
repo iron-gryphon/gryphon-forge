@@ -1,6 +1,6 @@
 ---
 # Verify openshift_install_release_image_override exists on the registry (disconnected mirror).
-# When ignition_mirror_release_image_check_from_bastion is true, runs on bastion and writes result to controller install_dir.
+# When ignition_mirror_release_image_check_from_bastion is true, uses bastion paths and delegate_to bastion (play may be localhost).
 - name: Resolve trust bundle for mirror TLS (optional)
   ansible.builtin.set_fact:
     ignition_mirror_trust_bundle_resolved: >-
@@ -29,12 +29,16 @@
     ignition_mirror_check_result_file: "{{ ignition_mirror_release_image_check_result_path | default(install_dir ~ '/mirror-release-image-check.txt', true) }}"
 
 - name: Ensure oc on bastion for mirror check
-  ansible.builtin.include_tasks: ensure_oc_on_bastion_for_mirror_check.yml
-  vars:
-    ignition_mirror_check_bastion_tmp: "/var/tmp/gryphon-forge-oc-mirror-preflight-{{ hostvars['localhost']['cluster_name'] }}"
-    ignition_ocp_client_url_linux: "{{ hostvars['localhost']['forge_ocp_client_url_linux'] }}"
-    ignition_ocp_mirror_validate_certs: "{{ hostvars['localhost']['forge_ocp_mirror_validate_certs'] | default(true) }}"
   when: ignition_mirror_release_image_check_from_bastion | default(false) | bool
+  delegate_to: bastion
+  run_once: true
+  block:
+    - name: Include ensure oc on bastion for mirror check
+      ansible.builtin.include_tasks: ensure_oc_on_bastion_for_mirror_check.yml
+      vars:
+        ignition_mirror_check_bastion_tmp: "/var/tmp/gryphon-forge-oc-mirror-preflight-{{ hostvars['localhost']['cluster_name'] }}"
+        ignition_ocp_client_url_linux: "{{ hostvars['localhost']['forge_ocp_client_url_linux'] }}"
+        ignition_ocp_mirror_validate_certs: "{{ hostvars['localhost']['forge_ocp_mirror_validate_certs'] | default(true) }}"
 
 - name: Copy pull secret to bastion for oc registry auth
   ansible.builtin.copy:
@@ -42,6 +46,8 @@
     dest: /var/tmp/gryphon-forge-pull-secret-check
     mode: "0600"
   when: ignition_mirror_release_image_check_from_bastion | default(false) | bool
+  delegate_to: bastion
+  run_once: true
 
 - name: Use pull secret path on bastion for oc
   ansible.builtin.set_fact:
@@ -56,6 +62,8 @@
   when:
     - ignition_mirror_release_image_check_from_bastion | default(false) | bool
     - ignition_mirror_trust_bundle_resolved | length > 0
+  delegate_to: bastion
+  run_once: true
 
 - name: Write mirror registry CA on controller when provided (localhost check)
   ansible.builtin.copy:
@@ -83,6 +91,8 @@
     argv: "{{ ignition_mirror_oc_image_info_argv }}"
   register: ignition_mirror_image_info
   changed_when: false
+  delegate_to: "{{ 'bastion' if (ignition_mirror_release_image_check_from_bastion | default(false) | bool) else inventory_hostname }}"
+  run_once: "{{ ignition_mirror_release_image_check_from_bastion | default(false) | bool }}"
 
 - name: Write mirror release image check result on controller
   ansible.builtin.copy:
@@ -105,6 +115,8 @@
     path: /var/tmp/gryphon-forge-pull-secret-check
     state: absent
   when: ignition_mirror_release_image_check_from_bastion | default(false) | bool
+  delegate_to: bastion
+  run_once: true
 
 - name: Remove mirror CA temp on bastion
   ansible.builtin.file:
@@ -113,6 +125,8 @@
   when:
     - ignition_mirror_release_image_check_from_bastion | default(false) | bool
     - ignition_mirror_trust_bundle_resolved | length > 0
+  delegate_to: bastion
+  run_once: true
 
 - name: Remove mirror CA temp on controller
   ansible.builtin.file:

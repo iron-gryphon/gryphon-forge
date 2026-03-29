@@ -207,19 +207,13 @@ ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json -e ec2_key
    ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json \
      -e bastion_ssh_private_key_path=../gryphon-foundry/bastion-key.pem
    ```
-   When `mirror_registry_url` is set, the install-config gets `imageContentSources` and an `ImageContentSourcePolicy` manifest.
+   When `mirror_registry_url` is set, the install-config gets `imageDigestSources` (default) and an `ImageDigestMirrorSet` manifest, aligned with `oc adm release mirror --print-mirror-instructions=idms`. Use `mirror_registry_use_image_digest_sources: false` for legacy `imageContentSources` + `ImageContentSourcePolicy`.
 
 5. **Registry TLS (required for private CAs / self-signed)** — RHCOS and other Go-based clients validate the registry with modern rules: the certificate **must include Subject Alternative Names (SAN)** listing every DNS name used to reach the mirror (for example `DNS:mirror.fsi.internal`). A certificate with only `CN=mirror.fsi.internal` and no SAN will fail with errors like *certificate relies on legacy Common Name field*.
 
    - **gryphon-foundry mirror EC2** (`create_mirror_registry = true`): Terraform generates a CA and server certificate with SANs, installs them on the instance, and emits `mirror_registry_additional_trust_bundle` in `terraform output -json`. gryphon-forge reads it from `foundry_output.json` into `install-config` `additionalTrustBundle`—no manual PEM copy from the host.
 
-   - **Replace bad certificates on the mirror** (custom registry or pre-change foundry): install a server cert + key whose SANs match how nodes resolve the registry hostname. From this repo you can generate a small offline CA and a SAN-equipped server cert:
-
-     ```bash
-     ./scripts/generate-mirror-registry-tls.sh mirror.fsi.internal
-     ```
-
-     Use the generated `server-cert.pem` / `server-key.pem` on the mirror (or TLS front-end), then set Forge’s `mirror_registry_additional_trust_bundle` to the PEM contents of **`ca-cert.pem`** from that output (or merge into `foundry_output.json`), regenerate ignition, and redeploy.
+   - **Replace bad certificates on the mirror** (custom registry or pre-change foundry): install a server cert + key whose SANs match how nodes resolve the registry hostname (generate with OpenSSL or your PKI). Set Forge’s `mirror_registry_additional_trust_bundle` to the PEM of the issuing CA (or chain), merge into `foundry_output.json` if you load foundry that way, regenerate ignition, and redeploy.
 
    - **Corporate PKI**: ensure the issued server cert’s SAN extension includes the mirror FQDN; supply the signing CA chain in `mirror_registry_additional_trust_bundle` as PEM.
 
