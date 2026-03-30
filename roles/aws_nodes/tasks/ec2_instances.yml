@@ -70,7 +70,7 @@
         assign_public_ip: false
         groups:
           - "{{ aws_nodes_master_sg_id }}"
-    iam_instance_profile: "{{ aws_nodes_ignition_instance_profile }}"
+    iam_instance_profile: "{{ aws_nodes_ocp_master_instance_profile }}"
     user_data: "{{ aws_nodes_master_user_data }}"
     tags:
       Name: "{{ cluster_name }}-master-{{ item }}"
@@ -95,7 +95,7 @@
         assign_public_ip: false
         groups:
           - "{{ aws_nodes_worker_sg_id }}"
-    iam_instance_profile: "{{ aws_nodes_ignition_instance_profile }}"
+    iam_instance_profile: "{{ aws_nodes_ocp_worker_instance_profile }}"
     user_data: "{{ aws_nodes_worker_user_data }}"
     tags:
       Name: "{{ cluster_name }}-worker-{{ item }}"
@@ -119,7 +119,7 @@
         assign_public_ip: false
         groups:
           - "{{ aws_nodes_worker_sg_id }}"
-    iam_instance_profile: "{{ aws_nodes_ignition_instance_profile }}"
+    iam_instance_profile: "{{ aws_nodes_ocp_worker_instance_profile }}"
     user_data: "{{ aws_nodes_worker_user_data }}"
     tags:
       Name: "{{ cluster_name }}-gpu-worker-{{ item }}"

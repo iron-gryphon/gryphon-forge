@@ -95,6 +95,122 @@
     - aws_nodes
     - ec2
 
+# Masters/workers need S3 ignition fetch plus AWS instance profile permissions for cloud-controller-manager
+# (bootstrap uses ignition-only; see openshift/installer upi/aws/cloudformation/03_cluster_security.yaml).
+- name: Create IAM role for control-plane nodes (cloud provider + ignition S3)
+  amazon.aws.iam_role:
+    name: "{{ cluster_name }}-ocp-master"
+    assume_role_policy_document: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Principal": {"Service": "ec2.amazonaws.com"},
+          "Action": "sts:AssumeRole"
+        }]
+      }
+    create_instance_profile: false
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Attach OpenShift AWS master cloud-provider policy
+  amazon.aws.iam_policy:
+    iam_type: role
+    iam_name: "{{ cluster_name }}-ocp-master"
+    policy_name: "{{ cluster_name }}-ocp-master-cloud-provider"
+    policy_json: "{{ lookup('file', 'iam_policy_ocp_aws_master_cloud_provider.json') }}"
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Attach S3 ignition read policy to OCP master role
+  amazon.aws.iam_policy:
+    iam_type: role
+    iam_name: "{{ cluster_name }}-ocp-master"
+    policy_name: "{{ cluster_name }}-ocp-master-ignition-s3-read"
+    policy_json: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "arn:aws:s3:::{{ aws_nodes_ignition_bucket }}/*"
+        }]
+      }
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Create instance profile for OCP master nodes
+  amazon.aws.iam_instance_profile:
+    name: "{{ cluster_name }}-ocp-master"
+    role: "{{ cluster_name }}-ocp-master"
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Create IAM role for worker nodes (minimal cloud provider + ignition S3)
+  amazon.aws.iam_role:
+    name: "{{ cluster_name }}-ocp-worker"
+    assume_role_policy_document: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Principal": {"Service": "ec2.amazonaws.com"},
+          "Action": "sts:AssumeRole"
+        }]
+      }
+    create_instance_profile: false
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Attach OpenShift AWS worker cloud-provider policy
+  amazon.aws.iam_policy:
+    iam_type: role
+    iam_name: "{{ cluster_name }}-ocp-worker"
+    policy_name: "{{ cluster_name }}-ocp-worker-cloud-provider"
+    policy_json: "{{ lookup('file', 'iam_policy_ocp_aws_worker_cloud_provider.json') }}"
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Attach S3 ignition read policy to OCP worker role
+  amazon.aws.iam_policy:
+    iam_type: role
+    iam_name: "{{ cluster_name }}-ocp-worker"
+    policy_name: "{{ cluster_name }}-ocp-worker-ignition-s3-read"
+    policy_json: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "arn:aws:s3:::{{ aws_nodes_ignition_bucket }}/*"
+        }]
+      }
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Create instance profile for OCP worker nodes
+  amazon.aws.iam_instance_profile:
+    name: "{{ cluster_name }}-ocp-worker"
+    role: "{{ cluster_name }}-ocp-worker"
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
 - name: Upload bootstrap ignition to S3
   amazon.aws.s3_object:
     bucket: "{{ aws_nodes_ignition_bucket }}"
@@ -149,9 +265,11 @@
     - aws_nodes
     - ec2
 
-- name: Set ignition instance profile
+- name: Set instance profile names for EC2 launches
   ansible.builtin.set_fact:
     aws_nodes_ignition_instance_profile: "{{ cluster_name }}-ignition-reader"
+    aws_nodes_ocp_master_instance_profile: "{{ cluster_name }}-ocp-master"
+    aws_nodes_ocp_worker_instance_profile: "{{ cluster_name }}-ocp-worker"
   tags:
     - aws_nodes
     - ec2
