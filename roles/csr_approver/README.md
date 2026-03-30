@@ -11,7 +11,8 @@ Watches for pending Certificate Signing Requests (CSRs) from Kubelet during Open
 | `csr_check_interval` | Seconds between CSR checks | 30 |
 | `csr_approver_dns_resolution_retries` | Attempts for `getent hosts` on api-int (Route53/VPC DNS propagation) | 12 |
 | `csr_approver_dns_resolution_delay` | Seconds between DNS check attempts after a failure | 30 |
-| `csr_approver_connectivity_timeout` | Seconds to wait for API TCP 6443 before bootstrap wait | 300 |
+| `csr_approver_connectivity_timeout` | Seconds to wait for API TCP 6443 before MCS check | 300 |
+| `csr_approver_mcs_connectivity_timeout` | Seconds to wait for Machine Config Server TCP 22623 on api-int (master Ignition) | 300 |
 | `csr_approver_skip_api_tg_preflight` | Skip controller-side check that `*-api-tg` has registered targets | false |
 | `csr_approver_gather_on_failure` | When bootstrap fails, gather logs and fetch to controller | true |
 | `csr_approver_gather_failure_dest` | Override path for gathered logs; default `playbook_dir/bootstrap-failure-logs/<cluster>-<epoch>` | (none) |
@@ -23,7 +24,7 @@ Before waiting for bootstrap completion, the role validates:
 
 1. **DNS resolution** — `api-int.<cluster>.<base_domain>` must resolve (retries with `csr_approver_dns_resolution_delay` to allow Route53 / VPC DNS propagation).
 2. **API NLB targets (controller)** — Unless `csr_approver_skip_api_tg_preflight` is true, queries AWS for `<cluster>-api-tg` and fails fast if there are no registered targets (avoids a long bastion `wait_for` when the NLB has nothing to forward to).
-3. **TCP connectivity** — Port 6443 must be reachable from this host within `csr_approver_connectivity_timeout` seconds.
+3. **TCP connectivity** — Ports **6443** and **22623** on `api-int` must be reachable (MCS on 22623 serves master Ignition; same NLB as API in gryphon-forge).
 
 If either check fails, the role fails with a clear message instead of blocking on `openshift-install wait-for bootstrap-complete`. When `csr_approver_bastion_lb_diagnostics_on_failure` is true, those failures also record bastion-side `getent`/TCP probes under `{{ csr_approver_install_dir }}/csr-fail/<cluster>-<epoch>/`.
 

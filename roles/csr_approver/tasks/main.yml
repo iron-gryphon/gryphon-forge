@@ -158,6 +158,13 @@
         timeout: "{{ csr_approver_connectivity_timeout }}"
         state: started
 
+    - name: Wait for Machine Config Server on api-int (22623)
+      ansible.builtin.wait_for:
+        host: "{{ api_int_dns_name }}"
+        port: 22623
+        timeout: "{{ csr_approver_mcs_connectivity_timeout }}"
+        state: started
+
   rescue:
     - name: Capture bastion LB diagnostics after CSR API connectivity failure
       ansible.builtin.include_role:
@@ -170,14 +177,16 @@
     - name: Fail with API connectivity troubleshooting
       ansible.builtin.fail:
         msg: >-
-          Cannot reach {{ api_int_dns_name }}:6443 from this host within {{ csr_approver_connectivity_timeout }}s.
-          Check: 1) In EC2 → Target groups → {{ cluster_name }}-api-tg, at least one target is **healthy**
-          (if all unhealthy, the NLB drops traffic even when DNS resolves),
-          2) API/MCS NLBs have cross-zone load balancing enabled (gryphon-forge enables this on new runs),
-          3) Bootstrap node running and registered in {{ cluster_name }}-api-tg,
-          4) foundry_nest_vpc_cidr includes the bastion private IP (SG rules cannot reference a peer-VPC bastion SG for peering traffic),
-          5) Security groups allow API (6443) from Vault + Nest CIDR, 6) VPC peering routes Nest ↔ Vault.
-          From bastion test TCP (nc may be missing): timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443"
+          Cannot reach {{ api_int_dns_name }} on API (6443) and/or MCS (22623) within the configured timeouts
+          (6443={{ csr_approver_connectivity_timeout }}s, 22623={{ csr_approver_mcs_connectivity_timeout }}s).
+          Masters need TCP {{ api_int_dns_name }}:22623 for Ignition (https://api-int:22623/config/master).
+          Check: 1) EC2 → Target groups → {{ cluster_name }}-api-tg and {{ cluster_name }}-mcs-tg: bootstrap registered;
+          {{ cluster_name }}-mcs-tg should include only bootstrap until control plane serves MCS.
+          2) API NLB ({{ cluster_name }}-api) listeners include **both** 6443 and 22623 (api-int aliases to this NLB).
+          3) Cross-zone load balancing enabled on that NLB (gryphon-forge sets this on apply).
+          4) foundry_nest_vpc_cidr / SGs allow Vault + Nest CIDR to reach NLB targets; 5) peering routes Nest ↔ Vault.
+          From bastion: timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443"
+          and timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/22623"
           or curl -vk --connect-timeout 5 https://{{ api_int_dns_name }}:6443/
           {% if csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool %}
           Bastion diagnostics (if applicable): {{ csr_approver_install_dir }}/csr-fail/
@@ -411,7 +420,7 @@
   ansible.builtin.fail:
     msg: >-
       Bootstrap did not complete. Check bootstrap node and API connectivity.
-      Ensure api-int.{{ cluster_name }}.{{ base_domain }} resolves and port 6443 is reachable from bastion.
+      Ensure api-int.{{ cluster_name }}.{{ base_domain }} resolves and ports 6443 and 22623 (MCS) are reachable from bastion.
       {% if csr_approver_gather_on_failure | default(true) | bool and csr_approver_gather_dest is defined %}
       Logs gathered to: {{ csr_approver_gather_dest }}
       {% if csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool %}
@@ -421,12 +430,14 @@
       Bastion probes: under {{ csr_approver_install_dir }}/csr-fail/ (gather was disabled)
       {% endif %}
       Troubleshooting:
-      1) API/MCS NLBs must use cross-zone load balancing when the API TG spans AZs (forge sets this on new runs; enable in AWS if upgrading an older stack).
-      2) Verify foundry_nest_vpc_cidr is set (bootstrap SG must allow 6443 from Nest for bastion).
-      3) Check NLB target health: see aws-inspection-report.txt in logs dir, or AWS Console → EC2 → Target Groups → {{ cluster_name }}-api-tg.
+      1) API NLB ({{ cluster_name }}-api) must expose **both** 6443 and 22623 on api-int, with cross-zone load balancing
+      when targets span AZs (forge sets this on apply; fix in AWS if upgrading from a pre-merge stack).
+      2) Verify foundry_nest_vpc_cidr is set (bootstrap SG allows 6443/22623 from Nest for bastion where applicable).
+      3) Target health: {{ cluster_name }}-api-tg and {{ cluster_name }}-mcs-tg (MCS = bootstrap :22623); see aws-inspection-report.txt.
       4) Gather bootstrap logs: openshift-install gather bootstrap --dir={{ csr_approver_install_dir }} --log-level=info
-      5) From bastion, test TCP 6443: timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443"
-      or curl -vk --connect-timeout 5 https://{{ api_int_dns_name }}:6443/ (yum/dnf install nc optional)
+      5) From bastion: timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443"
+      and timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/22623"
+      or curl -vk --connect-timeout 5 https://{{ api_int_dns_name }}:6443/
       openshift-install stdout: {{ csr_approver_bootstrap_wait.stdout | default('(none)') }}
       openshift-install stderr: {{ csr_approver_bootstrap_wait.stderr | default('(none)') }}
   when: csr_approver_bootstrap_wait.rc != 0

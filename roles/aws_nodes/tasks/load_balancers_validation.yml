@@ -41,6 +41,27 @@
     - aws_nodes
     - load_balancers
 
+- name: Describe MCS target group after registration (validation snapshot)
+  community.aws.elb_target_group_info:
+    names:
+      - "{{ cluster_name }}-mcs-tg"
+    collect_targets_health: true
+    region: "{{ foundry_region }}"
+  register: aws_nodes_lb_val_mcs_tg
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Write MCS target group and target health (JSON)
+  ansible.builtin.copy:
+    dest: "{{ aws_nodes_lb_validation_session_dir }}/mcs-target-group-info.json"
+    content: "{{ aws_nodes_lb_val_mcs_tg | to_nice_json }}"
+    mode: "0644"
+  when: aws_nodes_lb_val_mcs_tg.target_groups | default([]) | length > 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
 - name: Write API target group and target health (JSON)
   ansible.builtin.copy:
     dest: "{{ aws_nodes_lb_validation_session_dir }}/api-target-group-info.json"
@@ -160,8 +181,9 @@
     content: |
       #!/bin/sh
       # Run on the bootstrap node (SSH / SSM session) after a failure.
-      sudo ss -lntp | grep 6443 || true
+      sudo ss -lntp | grep -E '6443|22623' || true
       sudo lsof -iTCP:6443 -sTCP:LISTEN || true
+      sudo lsof -iTCP:22623 -sTCP:LISTEN || true
       sudo journalctl -u kubelet --no-pager -n 200
       sudo journalctl -b -u ignition-fetch.service -u ignition-fetch-offline.service --no-pager
       sudo journalctl -b | grep -iE 'ignition|fail|error' | tail -80

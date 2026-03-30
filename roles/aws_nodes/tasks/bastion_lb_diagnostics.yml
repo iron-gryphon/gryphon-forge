@@ -47,6 +47,13 @@
       changed_when: false
       failed_when: false
 
+    - name: Bastion — TCP probe to api-int:22623 (MCS; master Ignition fetch)
+      ansible.builtin.shell: timeout 5 bash -c 'echo >/dev/tcp/{{ api_int_dns_name }}/22623' && echo OK || echo FAIL
+      register: aws_nodes_lb_val_bastion_tcp_mcs
+      delegate_to: bastion
+      changed_when: false
+      failed_when: false
+
     - name: Bastion — routing to bootstrap private IP (Nest→Vault peering)
       ansible.builtin.command:
         argv:
@@ -95,6 +102,10 @@
           === timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443" ===
           stdout={{ aws_nodes_lb_val_bastion_tcp.stdout | default('') | trim }}
           stderr={{ aws_nodes_lb_val_bastion_tcp.stderr | default('') | trim }}
+
+          === timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/22623" (MCS) ===
+          stdout={{ aws_nodes_lb_val_bastion_tcp_mcs.stdout | default('') | trim }}
+          stderr={{ aws_nodes_lb_val_bastion_tcp_mcs.stderr | default('') | trim }}
 
           {% if aws_nodes_lb_val_bootstrap_local.instances | default([]) | length > 0 %}
           === ip route get {{ aws_nodes_lb_val_bootstrap_local.instances[0].private_ip_address }} (bootstrap) ===
