@@ -147,7 +147,7 @@
       tags:
         - destroy
 
-    - name: Delete MCS NLB
+    - name: Delete legacy MCS NLB (no longer created; 22623 is on the API NLB)
       community.aws.elb_network_lb:
         name: "{{ cluster_name }}-mcs"
         state: absent
@@ -229,6 +229,7 @@
     - name: Delete ignition IAM role
       amazon.aws.iam_role:
         name: "{{ cluster_name }}-ignition-reader"
+        delete_instance_profile: false
         state: absent
       ignore_errors: true
       tags:

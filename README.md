@@ -200,26 +200,20 @@ ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json -e ec2_key
    ```
    See [Red Hat disconnected install docs](https://docs.openshift.com/container-platform/4.15/installing/disconnected_install/installing-mirroring-disconnected.html).
 
-3. **Add mirror registry to pull secret** — Include the mirror registry credentials in your pull secret (merge with Red Hat pull secret).
+3. **Add mirror registry to pull secret** — The Red Hat pull secret does not include your private mirror. Merge mirror `auths` into the same JSON you use for installs (see **Iron Gryphon** air-gapped setup in the team profile README: merge on the **bastion** with `oc registry login` or `podman login` to a temp `--authfile`, then `jq` **only** the `auths` maps—`{auths: ($a.auths * $b.auths)}`—not a top-level merge that drops Red Hat entries). Copy the merged file to your Ansible controller and set `PULL_SECRET_PATH`, or set **`mirror_registry_dockerconfig_extra_path`** in Forge to a mirror-only dockerconfig for tag discovery only.
 
 4. **Deploy with mirror** — Pass `mirror_registry_url` (from foundry output or `-e`):
    ```bash
    ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json \
      -e bastion_ssh_private_key_path=../gryphon-foundry/bastion-key.pem
    ```
-   When `mirror_registry_url` is set, the install-config gets `imageContentSources` and an `ImageContentSourcePolicy` manifest.
+   When `mirror_registry_url` is set, the install-config gets `imageDigestSources` (default) and an `ImageDigestMirrorSet` manifest, aligned with `oc adm release mirror --print-mirror-instructions=idms`. Use `mirror_registry_use_image_digest_sources: false` for legacy `imageContentSources` + `ImageContentSourcePolicy`.
 
 5. **Registry TLS (required for private CAs / self-signed)** — RHCOS and other Go-based clients validate the registry with modern rules: the certificate **must include Subject Alternative Names (SAN)** listing every DNS name used to reach the mirror (for example `DNS:mirror.fsi.internal`). A certificate with only `CN=mirror.fsi.internal` and no SAN will fail with errors like *certificate relies on legacy Common Name field*.
 
    - **gryphon-foundry mirror EC2** (`create_mirror_registry = true`): Terraform generates a CA and server certificate with SANs, installs them on the instance, and emits `mirror_registry_additional_trust_bundle` in `terraform output -json`. gryphon-forge reads it from `foundry_output.json` into `install-config` `additionalTrustBundle`—no manual PEM copy from the host.
 
-   - **Replace bad certificates on the mirror** (custom registry or pre-change foundry): install a server cert + key whose SANs match how nodes resolve the registry hostname. From this repo you can generate a small offline CA and a SAN-equipped server cert:
-
-     ```bash
-     ./scripts/generate-mirror-registry-tls.sh mirror.fsi.internal
-     ```
-
-     Use the generated `server-cert.pem` / `server-key.pem` on the mirror (or TLS front-end), then set Forge’s `mirror_registry_additional_trust_bundle` to the PEM contents of **`ca-cert.pem`** from that output (or merge into `foundry_output.json`), regenerate ignition, and redeploy.
+   - **Replace bad certificates on the mirror** (custom registry or pre-change foundry): install a server cert + key whose SANs match how nodes resolve the registry hostname (generate with OpenSSL or your PKI). Set Forge’s `mirror_registry_additional_trust_bundle` to the PEM of the issuing CA (or chain), merge into `foundry_output.json` if you load foundry that way, regenerate ignition, and redeploy.
 
    - **Corporate PKI**: ensure the issued server cert’s SAN extension includes the mirror FQDN; supply the signing CA chain in `mirror_registry_additional_trust_bundle` as PEM.
 

@@ -1,6 +1,9 @@
 ---
 # Persist NLB / target-group / EC2 snapshots for post-mortem (controller + optional bastion).
 # Uses AWS API modules where possible; describe-load-balancers uses aws CLI when available.
+#
+# Invoked from main.yml after route53.yml so api-int.<cluster>.<domain> exists in Route53 before
+# bastion-side getent/TCP probes (avoid false NXDOMAIN in bastion-diagnostics.txt).
 
 - name: Define LB validation session directory
   ansible.builtin.set_fact:
@@ -34,6 +37,27 @@
     collect_targets_health: true
     region: "{{ foundry_region }}"
   register: aws_nodes_lb_val_api_tg
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Describe MCS target group after registration (validation snapshot)
+  community.aws.elb_target_group_info:
+    names:
+      - "{{ cluster_name }}-mcs-tg"
+    collect_targets_health: true
+    region: "{{ foundry_region }}"
+  register: aws_nodes_lb_val_mcs_tg
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Write MCS target group and target health (JSON)
+  ansible.builtin.copy:
+    dest: "{{ aws_nodes_lb_validation_session_dir }}/mcs-target-group-info.json"
+    content: "{{ aws_nodes_lb_val_mcs_tg | to_nice_json }}"
+    mode: "0644"
+  when: aws_nodes_lb_val_mcs_tg.target_groups | default([]) | length > 0
   tags:
     - aws_nodes
     - load_balancers
@@ -157,8 +181,9 @@
     content: |
       #!/bin/sh
       # Run on the bootstrap node (SSH / SSM session) after a failure.
-      sudo ss -lntp | grep 6443 || true
+      sudo ss -lntp | grep -E '6443|22623' || true
       sudo lsof -iTCP:6443 -sTCP:LISTEN || true
+      sudo lsof -iTCP:22623 -sTCP:LISTEN || true
       sudo journalctl -u kubelet --no-pager -n 200
       sudo journalctl -b -u ignition-fetch.service -u ignition-fetch-offline.service --no-pager
       sudo journalctl -b | grep -iE 'ignition|fail|error' | tail -80
@@ -197,52 +222,13 @@
     - aws_nodes
     - load_balancers
 
+# Optional: set aws_nodes_lb_validation_from_bastion true to record bastion-diagnostics.txt during aws_nodes.
+# Default is false; csr_approver runs the same tasks on failure (see bastion_lb_diagnostics.yml).
 - name: Capture bastion DNS and TCP check for api-int
-  when:
-    - aws_nodes_lb_validation_from_bastion | bool
-    - (groups['bastion'] | default([]) | length) > 0
-  block:
-    - name: Bastion — getent api-int
-      ansible.builtin.command:
-        argv:
-          - getent
-          - hosts
-          - "{{ api_int_dns_name }}"
-      register: aws_nodes_lb_val_bastion_getent
-      delegate_to: bastion
-      changed_when: false
-      failed_when: false
-      tags:
-        - aws_nodes
-        - load_balancers
-
-    - name: Bastion — TCP probe to api-int:6443
-      ansible.builtin.shell: timeout 5 bash -c 'echo >/dev/tcp/{{ api_int_dns_name }}/6443' && echo OK || echo FAIL
-      register: aws_nodes_lb_val_bastion_tcp
-      delegate_to: bastion
-      changed_when: false
-      failed_when: false
-      tags:
-        - aws_nodes
-        - load_balancers
-
-    - name: Write bastion-side diagnostics
-      ansible.builtin.copy:
-        dest: "{{ aws_nodes_lb_validation_session_dir }}/bastion-diagnostics.txt"
-        content: |
-          === getent hosts {{ api_int_dns_name }} ===
-          rc={{ aws_nodes_lb_val_bastion_getent.rc | default('n/a') }}
-          stdout={{ aws_nodes_lb_val_bastion_getent.stdout | default('') | trim }}
-          stderr={{ aws_nodes_lb_val_bastion_getent.stderr | default('') | trim }}
-
-          === timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443" ===
-          stdout={{ aws_nodes_lb_val_bastion_tcp.stdout | default('') | trim }}
-          stderr={{ aws_nodes_lb_val_bastion_tcp.stderr | default('') | trim }}
-        mode: "0644"
-      delegate_to: localhost
-      tags:
-        - aws_nodes
-        - load_balancers
+  ansible.builtin.include_tasks: bastion_lb_diagnostics.yml
+  when: aws_nodes_lb_validation_from_bastion | bool
+  vars:
+    aws_nodes_bastion_lb_diag_output_dir: "{{ aws_nodes_lb_validation_session_dir }}"
 
 - name: Display LB validation snapshot location and API target health summary
   ansible.builtin.debug:

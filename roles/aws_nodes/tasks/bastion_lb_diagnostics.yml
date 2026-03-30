@@ -1,0 +1,137 @@
+---
+# Bastion-side DNS/TCP probes for api-int and bootstrap (Nest→Vault).
+# Caller sets aws_nodes_bastion_lb_diag_output_dir (directory; created if missing).
+# Requires: api_int_dns_name, cluster_name, foundry_region (play scope); inventory group bastion when probes run.
+
+- name: Ensure bastion diagnostics output directory exists
+  ansible.builtin.file:
+    path: "{{ aws_nodes_bastion_lb_diag_output_dir }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  run_once: true
+
+- name: Describe bootstrap instance for bastion diagnostics (controller)
+  amazon.aws.ec2_instance_info:
+    filters:
+      "tag:cluster": "{{ cluster_name }}"
+      "tag:role": "bootstrap"
+      "instance-state-name":
+        - pending
+        - running
+        - stopping
+        - stopped
+    region: "{{ foundry_region }}"
+  register: aws_nodes_lb_val_bootstrap_local
+  delegate_to: localhost
+  run_once: true
+
+- name: Capture bastion DNS and TCP checks
+  when: (groups['bastion'] | default([]) | length) > 0
+  block:
+    - name: Bastion — getent api-int
+      ansible.builtin.command:
+        argv:
+          - getent
+          - hosts
+          - "{{ api_int_dns_name }}"
+      register: aws_nodes_lb_val_bastion_getent
+      delegate_to: bastion
+      changed_when: false
+      failed_when: false
+
+    - name: Bastion — TCP probe to api-int:6443
+      ansible.builtin.shell: timeout 5 bash -c 'echo >/dev/tcp/{{ api_int_dns_name }}/6443' && echo OK || echo FAIL
+      register: aws_nodes_lb_val_bastion_tcp
+      delegate_to: bastion
+      changed_when: false
+      failed_when: false
+
+    - name: Bastion — TCP probe to api-int:22623 (MCS; master Ignition fetch)
+      ansible.builtin.shell: timeout 5 bash -c 'echo >/dev/tcp/{{ api_int_dns_name }}/22623' && echo OK || echo FAIL
+      register: aws_nodes_lb_val_bastion_tcp_mcs
+      delegate_to: bastion
+      changed_when: false
+      failed_when: false
+
+    - name: Bastion — routing to bootstrap private IP (Nest→Vault peering)
+      ansible.builtin.command:
+        argv:
+          - ip
+          - route
+          - get
+          - "{{ aws_nodes_lb_val_bootstrap_local.instances[0].private_ip_address }}"
+      register: aws_nodes_lb_val_bastion_route_bootstrap
+      delegate_to: bastion
+      changed_when: false
+      failed_when: false
+      when:
+        - aws_nodes_lb_val_bootstrap_local.instances | default([]) | length > 0
+
+    - name: Bastion — TCP probe bootstrap:22 (SSH before ssh(1) auth)
+      ansible.builtin.shell: >-
+        timeout 5 bash -c 'echo >/dev/tcp/{{ aws_nodes_lb_val_bootstrap_local.instances[0].private_ip_address }}/22'
+        && echo OK || echo FAIL
+      register: aws_nodes_lb_val_bastion_tcp_bootstrap_ssh
+      delegate_to: bastion
+      changed_when: false
+      failed_when: false
+      when:
+        - aws_nodes_lb_val_bootstrap_local.instances | default([]) | length > 0
+
+    - name: Bastion — TCP probe bootstrap:6443 (peering path check)
+      ansible.builtin.shell: >-
+        timeout 5 bash -c 'echo >/dev/tcp/{{ aws_nodes_lb_val_bootstrap_local.instances[0].private_ip_address }}/6443'
+        && echo OK || echo FAIL
+      register: aws_nodes_lb_val_bastion_tcp_bootstrap_api
+      delegate_to: bastion
+      changed_when: false
+      failed_when: false
+      when:
+        - aws_nodes_lb_val_bootstrap_local.instances | default([]) | length > 0
+
+    - name: Write bastion-side diagnostics
+      ansible.builtin.copy:
+        dest: "{{ aws_nodes_bastion_lb_diag_output_dir }}/bastion-diagnostics.txt"
+        content: |
+          === getent hosts {{ api_int_dns_name }} ===
+          rc={{ aws_nodes_lb_val_bastion_getent.rc | default('n/a') }}
+          stdout={{ aws_nodes_lb_val_bastion_getent.stdout | default('') | trim }}
+          stderr={{ aws_nodes_lb_val_bastion_getent.stderr | default('') | trim }}
+
+          === timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443" ===
+          stdout={{ aws_nodes_lb_val_bastion_tcp.stdout | default('') | trim }}
+          stderr={{ aws_nodes_lb_val_bastion_tcp.stderr | default('') | trim }}
+
+          === timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/22623" (MCS) ===
+          stdout={{ aws_nodes_lb_val_bastion_tcp_mcs.stdout | default('') | trim }}
+          stderr={{ aws_nodes_lb_val_bastion_tcp_mcs.stderr | default('') | trim }}
+
+          {% if aws_nodes_lb_val_bootstrap_local.instances | default([]) | length > 0 %}
+          === ip route get {{ aws_nodes_lb_val_bootstrap_local.instances[0].private_ip_address }} (bootstrap) ===
+          rc={{ aws_nodes_lb_val_bastion_route_bootstrap.rc | default('n/a') }}
+          stdout={{ aws_nodes_lb_val_bastion_route_bootstrap.stdout | default('') | trim }}
+          stderr={{ aws_nodes_lb_val_bastion_route_bootstrap.stderr | default('') | trim }}
+
+          === TCP bootstrap:22 (SSH SYN path) ===
+          stdout={{ aws_nodes_lb_val_bastion_tcp_bootstrap_ssh.stdout | default('') | trim }}
+          stderr={{ aws_nodes_lb_val_bastion_tcp_bootstrap_ssh.stderr | default('') | trim }}
+
+          === TCP bootstrap:6443 from bastion (optional; SG may deny non-Vault sources) ===
+          stdout={{ aws_nodes_lb_val_bastion_tcp_bootstrap_api.stdout | default('') | trim }}
+          stderr={{ aws_nodes_lb_val_bastion_tcp_bootstrap_api.stderr | default('') | trim }}
+          {% endif %}
+        mode: "0644"
+      delegate_to: localhost
+      run_once: true
+
+- name: Note when bastion group is empty (bastion diagnostics skipped)
+  ansible.builtin.copy:
+    dest: "{{ aws_nodes_bastion_lb_diag_output_dir }}/bastion-diagnostics.txt"
+    content: |
+      Bastion diagnostics skipped: no hosts in inventory group "bastion"
+      (CSR / API checks ran on localhost without a Nest bastion).
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  when: (groups['bastion'] | default([]) | length) == 0

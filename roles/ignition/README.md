@@ -22,6 +22,19 @@ Wraps `openshift-install` to generate OpenShift ignition configuration files for
 - Valid pull secret from [Red Hat OpenShift Installer-Provisioned (AWS)](https://console.redhat.com/openshift/install/aws/installer-provisioned) — download and save to `~/.openshift/pull-secret` (or set `PULL_SECRET_PATH`)
 - SSH public key for node access
 
+## Disconnected mirror (optional)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `mirror_registry_url` | Private registry host for release payload | `""` |
+| `mirror_registry_use_image_digest_sources` | Use `imageDigestSources` + `ImageDigestMirrorSet` (vs legacy ICSP) | `true` |
+| `openshift_install_release_image_override` | Full image ref (`registry/repo@sha256:…` or `:tag`) | `""` |
+| `ignition_mirror_discover_release_tag` | If `true`, discover highest tag for `ocp_version` minor (e.g. `4.20.*-x86_64`) on the mirror; **do not** set `openshift_install_release_image_override` | `true` |
+| `ignition_mirror_discover_release_arch` | Arch suffix in tag (e.g. `x86_64`) | `x86_64` |
+| `ignition_mirror_discover_delegate_to_bastion` | Run discovery from bastion when present (recommended; mirror often only reachable from VPC) | `true` |
+
+Discovery runs `scripts/discover-mirror-release-tag.sh` (needs `jq`; uses `skopeo` if installed, else `curl` to the registry v2 API). It does **not** query Red Hat “stable channel” metadata—only semver sort of tags present on your mirror.
+
 ## Outputs
 
 Generates in `install_dir`:

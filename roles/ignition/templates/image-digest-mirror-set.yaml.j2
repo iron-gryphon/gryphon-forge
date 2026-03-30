@@ -1,9 +1,9 @@
-apiVersion: operator.openshift.io/v1alpha1
-kind: ImageContentSourcePolicy
+apiVersion: config.openshift.io/v1
+kind: ImageDigestMirrorSet
 metadata:
   name: mirror-registry
 spec:
-  repositoryDigestMirrors:
+  imageDigestMirrors:
     - mirrors:
         - "{{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}"
       source: quay.io/openshift-release-dev/ocp-release

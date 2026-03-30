@@ -1,6 +1,10 @@
 ---
-# Internal NLBs for OpenShift API (6443), MCS (22623)
+# Internal NLB for OpenShift api-int: Kubernetes API (6443) + Machine Config Server (22623) on the same DNS name.
+# Masters fetch https://api-int:22623/config/master; api-int must expose :22623 on the same LB Route53 aliases to.
 # Ingress: ALB (HTTPS) when foundry provides ACM cert; else NLB (TCP passthrough)
+#
+# community.aws.elb_target_group defaults modify_targets=true; with no `targets` key it deregisters
+# every attachment. We register instances via community.aws.elb_target — set modify_targets: false.
 
 - name: Create NLB target group for API (6443)
   community.aws.elb_target_group:
@@ -9,6 +13,7 @@
     port: 6443
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
+    modify_targets: false
     state: present
     # AWS defaults (e.g. healthy_threshold 5 × 30s) delay "healthy" long after apiserver listens; tighten for bootstrap API.
     health_check_protocol: tcp
@@ -23,7 +28,32 @@
     - aws_nodes
     - load_balancers
 
-- name: Create NLB for API
+- name: Create NLB target group for MCS (22623)
+  community.aws.elb_target_group:
+    name: "{{ cluster_name }}-mcs-tg"
+    protocol: TCP
+    port: 22623
+    vpc_id: "{{ foundry_vpc_id }}"
+    target_type: instance
+    modify_targets: false
+    state: present
+    region: "{{ foundry_region }}"
+  register: aws_nodes_mcs_tg
+  tags:
+    - aws_nodes
+    - load_balancers
+
+# Same MCS target group cannot attach to two NLBs; drop legacy {{ cluster_name }}-mcs before api-int listener uses it here.
+- name: Remove legacy standalone MCS NLB if present (22623 is served on api-int / API NLB)
+  community.aws.elb_network_lb:
+    name: "{{ cluster_name }}-mcs"
+    state: absent
+    region: "{{ foundry_region }}"
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Create or update NLB for API (api + api-int DNS; listeners 6443 and 22623)
   community.aws.elb_network_lb:
     name: "{{ cluster_name }}-api"
     subnets: "{{ foundry_private_subnets }}"
@@ -37,34 +67,6 @@
         DefaultActions:
           - Type: forward
             TargetGroupArn: "{{ aws_nodes_api_tg.target_group_arn }}"
-    state: present
-    region: "{{ foundry_region }}"
-  register: aws_nodes_api_nlb
-  tags:
-    - aws_nodes
-    - load_balancers
-
-- name: Create NLB target group for MCS (22623)
-  community.aws.elb_target_group:
-    name: "{{ cluster_name }}-mcs-tg"
-    protocol: TCP
-    port: 22623
-    vpc_id: "{{ foundry_vpc_id }}"
-    target_type: instance
-    state: present
-    region: "{{ foundry_region }}"
-  register: aws_nodes_mcs_tg
-  tags:
-    - aws_nodes
-    - load_balancers
-
-- name: Create NLB for Machine Config Server
-  community.aws.elb_network_lb:
-    name: "{{ cluster_name }}-mcs"
-    subnets: "{{ foundry_private_subnets }}"
-    scheme: internal
-    cross_zone_load_balancing: true
-    listeners:
       - Protocol: TCP
         Port: 22623
         DefaultActions:
@@ -72,6 +74,7 @@
             TargetGroupArn: "{{ aws_nodes_mcs_tg.target_group_arn }}"
     state: present
     region: "{{ foundry_region }}"
+  register: aws_nodes_api_nlb
   tags:
     - aws_nodes
     - load_balancers
@@ -84,6 +87,7 @@
     port: 80
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
+    modify_targets: false
     state: present
     region: "{{ foundry_region }}"
   register: aws_nodes_ingress_80_tg
@@ -127,6 +131,7 @@
     port: 443
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
+    modify_targets: false
     state: present
     region: "{{ foundry_region }}"
   register: aws_nodes_ingress_443_tg
@@ -142,6 +147,7 @@
     port: 80
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
+    modify_targets: false
     state: present
     region: "{{ foundry_region }}"
   register: aws_nodes_ingress_80_tg
@@ -410,9 +416,4 @@
     - aws_nodes
     - load_balancers
 
-- name: Capture NLB / TG validation artifacts (local directory)
-  ansible.builtin.include_tasks: load_balancers_validation.yml
-  when: aws_nodes_lb_validation_enabled | bool
-  tags:
-    - aws_nodes
-    - load_balancers
+# NLB/TG validation runs from main.yml after route53.yml so api-int exists before bastion DNS probes.

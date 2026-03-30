@@ -76,27 +76,54 @@ api_int_dns_name: "api-int.{{ cluster_name }}.{{ base_domain }}"
 ingress_dns_name: "*.apps.{{ cluster_name }}.{{ base_domain }}"
 
 # --- Disconnected Install (mirror registry) ---
-# When set, install-config gets imageContentSources and ICSP manifest for air-gapped install.
-# Workflow: run oc-mirror on an internet-connected host → mirror or disk → transfer into env →
-# push to mirror registry reachable from Vault. See Red Hat "Mirroring images for a disconnected installation".
-mirror_registry_url: ""  # e.g. mirror.fsi.internal or mirror.fsi.internal:443
-mirror_registry_release_path: "openshift/release"  # Path where oc-mirror stores release images
+# When set, install-config gets imageDigestSources (default) and an ImageDigestMirrorSet manifest—matching
+# `oc adm release mirror ... --print-mirror-instructions=idms`. Set mirror_registry_use_image_digest_sources: false
+# for legacy imageContentSources + ImageContentSourcePolicy.
+# Workflow: mirror release payload into a registry reachable from Vault (bastion or jump host). See Red Hat
+# "Mirroring images for a disconnected installation".
+mirror_registry_url: ""  # e.g. mirror.fsi.internal or mirror.fsi.internal:443 (no docker:// or https://)
+# Aligns install-config + cluster mirror CRs with oc adm release mirror / IDMS instructions (OCP 4.12+).
+mirror_registry_use_image_digest_sources: true
+# Must match the repository path on the mirror — the segment after docker://<host>/ in your mirror command; tag discovery calls GET /v2/<path>/tags/list.
+# Example oc-mirror v2 (mirror-to-registry): ... "docker://${MIRROR_REGISTRY_URL}/openshift/release" --v2  ->  openshift/release below
+# oc-mirror: ocp-release tags are often under .../openshift-release-dev/ocp-release; .../openshift/release may be component-only tags.
+mirror_registry_release_path: "openshift/release"
+# discover-mirror-release-tag.sh: GET ${scheme}://<mirror>/v2/... (set http only if the registry does not serve HTTPS).
+mirror_registry_discovery_scheme: "https"
 # PEM for the registry CA (or self-signed server cert). Required when the mirror is not in the system trust store.
 # The serving certificate MUST include Subject Alternative Names (DNS names clients use); CN-only certs fail on RHCOS (Go TLS).
-# Generate with: scripts/generate-mirror-registry-tls.sh mirror.fsi.internal
+# PEM for the registry CA when not using foundry-emitted trust (OpenSSL/PKI; SANs must cover mirror hostname).
 mirror_registry_additional_trust_bundle: ""
+# Optional: docker config JSON ({"auths":{...}}) with credentials for mirror_registry_url.
+# Merged with pull_secret_path for tag discovery only if the mirror is not already in the Red Hat pull secret.
+mirror_registry_dockerconfig_extra_path: ""
 # REQUIRED when mirror_registry_url is set (enforced at ignition): exact payload on your mirror (digest recommended).
 # 1) Mirror the release for your openshift-install build (same patch level as forge_ocp_mirror_channel / downloaded binary):
-#    oc adm release mirror -a ~/.docker/config.json \
+#    oc-mirror v2 (align destination path with mirror_registry_release_path), e.g.:
+#      oc mirror --authfile "$HOME/.openshift/pull-secret" -c ~/imageset-config.yml \
+#        --workspace "file://$HOME/oc-mirror-workspace" \
+#        "docker://<mirror_registry_url>/<mirror_registry_release_path>" --v2
+#    Or oc adm release mirror --registry-config ~/.openshift/pull-secret \
 #      --from=quay.io/openshift-release-dev/ocp-release:<VERSION>-x86_64 \
 #      --to=<mirror_registry_url>/<mirror_registry_release_path> \
-#      --to-release-image=<mirror_registry_url>/<mirror_registry_release_path>:<VERSION>-x86_64
-#    (or use oc-mirror; record imageContentSources / digest from the tool output.)
+#      --print-mirror-instructions=idms
+#    Omit --apply-release-image-signature unless you have a kubeconfig (applies signatures to a cluster).
+#    Use the printed "Update image" as openshift_install_release_image_override (tag or digest).
 # 2) Set this variable to the mirrored release image reference, typically --to-release-image or digest form, e.g.:
 #    openshift_install_release_image_override: "mirror.fsi.internal/openshift/release@sha256:..."
 # 3) Confirm: openshift-install version default release image matches this payload.
 openshift_install_release_image_override: ""
-# Optional: extra imageContentSources / ICSP entries from oc-mirror output (operators, etc.).
+# When mirror + override are set: verify digest with oc image info before openshift-install (bastion if present, else controller).
+ignition_mirror_release_image_check_enabled: true
+# Default: {{ install_dir }}/mirror-release-image-check.txt on the controller; set to override path.
+ignition_mirror_release_image_check_result_path: ""
+# When true (default): list tags on mirror openshift/release, pick highest X.Y.Z-<arch> for ocp_version minor,
+# set openshift_install_release_image_override to registry/path:tag. Conflicts with manual override;
+# requires jq (+ curl or skopeo). Set false to pin openshift_install_release_image_override manually.
+ignition_mirror_discover_release_tag: true
+ignition_mirror_discover_release_arch: x86_64
+ignition_mirror_discover_delegate_to_bastion: true
+# Optional: extra mirror mappings from oc-mirror / release mirror output (operators, etc.).
 # Format: [ { source: 'registry.redhat.io/foo/bar', mirrors: ['mirror.fsi.internal/...'] }, ... ]
 mirror_registry_extra_image_content_sources: []
 
