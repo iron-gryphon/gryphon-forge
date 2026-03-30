@@ -14,7 +14,9 @@ Wraps `openshift-install` to generate OpenShift ignition configuration files for
 | `foundry_private_subnets` | List of subnet IDs for platform.aws | - |
 | `foundry_region` | AWS region | `us-east-2` |
 | `master_count` | Number of control plane nodes | 3 |
-| `worker_count` | Number of worker nodes | 3 |
+| `worker_count` | Worker nodes provisioned by `aws_nodes` (EC2 + `worker.ign`); **not** `install-config` compute replicas (those stay `0` for UPI) | 3 |
+
+After `openshift-install create manifests`, this role removes `openshift/99_openshift-cluster-api_master-machines*.yaml`, `worker-machineset*.yaml`, and `99_openshift-machine-api_master-control-plane-machine-set.yaml` so the Machine API does not fight UPI (matches [OpenShift AWS UPI manifest steps](https://github.com/openshift/installer/blob/master/docs/user/aws/install_upi.md) manifest edits). `install-config` sets `networkType: OVNKubernetes` and default pod/service CIDRs explicitly.
 
 ## Prerequisites
 

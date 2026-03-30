@@ -7,8 +7,14 @@ platform:
     region: {{ foundry_region }}
     subnets: {{ foundry_private_subnets }}
 networking:
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
   machineNetwork:
   - cidr: {{ foundry_vault_vpc_cidr | default('10.1.0.0/16') }}
+  networkType: OVNKubernetes
+  serviceNetwork:
+  - 172.30.0.0/16
 publish: Internal
 pullSecret: |-
 {{ ignition_pull_secret_data | trim | indent(2, true) }}
@@ -58,9 +64,10 @@ controlPlane:
   platform:
     aws:
       type: {{ master_instance_type }}
+{# UPI: compute replicas 0 per openshift-install AWS docs; Forge provisions workers via worker.ign (worker_count). #}
 compute:
   - name: worker
-    replicas: {{ worker_count }}
+    replicas: 0
     platform:
       aws:
         type: {{ worker_instance_type }}
