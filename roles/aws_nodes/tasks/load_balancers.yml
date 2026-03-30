@@ -1,6 +1,9 @@
 ---
 # Internal NLBs for OpenShift API (6443), MCS (22623)
 # Ingress: ALB (HTTPS) when foundry provides ACM cert; else NLB (TCP passthrough)
+#
+# community.aws.elb_target_group defaults modify_targets=true; with no `targets` key it deregisters
+# every attachment. We register instances via community.aws.elb_target — set modify_targets: false.
 
 - name: Create NLB target group for API (6443)
   community.aws.elb_target_group:
@@ -9,6 +12,7 @@
     port: 6443
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
+    modify_targets: false
     state: present
     # AWS defaults (e.g. healthy_threshold 5 × 30s) delay "healthy" long after apiserver listens; tighten for bootstrap API.
     health_check_protocol: tcp
@@ -51,6 +55,7 @@
     port: 22623
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
+    modify_targets: false
     state: present
     region: "{{ foundry_region }}"
   register: aws_nodes_mcs_tg
@@ -84,6 +89,7 @@
     port: 80
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
+    modify_targets: false
     state: present
     region: "{{ foundry_region }}"
   register: aws_nodes_ingress_80_tg
@@ -127,6 +133,7 @@
     port: 443
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
+    modify_targets: false
     state: present
     region: "{{ foundry_region }}"
   register: aws_nodes_ingress_443_tg
@@ -142,6 +149,7 @@
     port: 80
     vpc_id: "{{ foundry_vpc_id }}"
     target_type: instance
+    modify_targets: false
     state: present
     region: "{{ foundry_region }}"
   register: aws_nodes_ingress_80_tg

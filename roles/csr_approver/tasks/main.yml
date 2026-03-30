@@ -21,6 +21,14 @@
       changed_when: false
 
   rescue:
+    - name: Capture bastion LB diagnostics after CSR DNS failure
+      ansible.builtin.include_role:
+        name: aws_nodes
+        tasks_from: bastion_lb_diagnostics.yml
+      vars:
+        aws_nodes_bastion_lb_diag_output_dir: "{{ csr_approver_install_dir }}/csr-fail/{{ cluster_name }}-{{ ansible_date_time.epoch }}"
+      when: csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool
+
     - name: Fail with DNS troubleshooting hint
       ansible.builtin.fail:
         msg: >-
@@ -30,6 +38,10 @@
           and the instance uses VPC DNS (e.g. AmazonProvidedDNS).
           Last result: rc={{ csr_approver_dns_check.rc | default('n/a') }},
           stderr={{ csr_approver_dns_check.stderr | default('') | trim }}.
+          {% if csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool %}
+          Bastion diagnostics (if applicable): see bastion-diagnostics.txt under
+          {{ csr_approver_install_dir }}/csr-fail/
+          {% endif %}
 
 # Fail in seconds when the NLB has no targets (otherwise bastion wait_for burns csr_approver_connectivity_timeout).
 - name: Preflight — API target group has registered targets
@@ -118,6 +130,23 @@
             - not csr_approver_api_healthy_done | bool
             - (_healthy_n | int) < 1
 
+  rescue:
+    - name: Capture bastion LB diagnostics after CSR API target group preflight failure
+      ansible.builtin.include_role:
+        name: aws_nodes
+        tasks_from: bastion_lb_diagnostics.yml
+      vars:
+        aws_nodes_bastion_lb_diag_output_dir: "{{ csr_approver_install_dir }}/csr-fail/{{ cluster_name }}-{{ ansible_date_time.epoch }}"
+      when: csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool
+
+    - name: Re-raise API target group preflight error
+      ansible.builtin.fail:
+        msg: >-
+          {{ ansible_failed_result.msg | default(ansible_failed_result | string) }}
+          {% if csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool %}
+          Bastion diagnostics (if applicable): {{ csr_approver_install_dir }}/csr-fail/
+          {% endif %}
+
 - name: Validate API port 6443 reachable
   tags:
     - csr_approval
@@ -130,6 +159,14 @@
         state: started
 
   rescue:
+    - name: Capture bastion LB diagnostics after CSR API connectivity failure
+      ansible.builtin.include_role:
+        name: aws_nodes
+        tasks_from: bastion_lb_diagnostics.yml
+      vars:
+        aws_nodes_bastion_lb_diag_output_dir: "{{ csr_approver_install_dir }}/csr-fail/{{ cluster_name }}-{{ ansible_date_time.epoch }}"
+      when: csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool
+
     - name: Fail with API connectivity troubleshooting
       ansible.builtin.fail:
         msg: >-
@@ -142,6 +179,9 @@
           5) Security groups allow API (6443) from Vault + Nest CIDR, 6) VPC peering routes Nest ↔ Vault.
           From bastion test TCP (nc may be missing): timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443"
           or curl -vk --connect-timeout 5 https://{{ api_int_dns_name }}:6443/
+          {% if csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool %}
+          Bastion diagnostics (if applicable): {{ csr_approver_install_dir }}/csr-fail/
+          {% endif %}
 
 - name: Wait for bootstrap completion
   ansible.builtin.command:
@@ -344,6 +384,29 @@
       tags:
         - csr_approval
 
+    - name: Capture bastion LB diagnostics into bootstrap failure logs directory
+      ansible.builtin.include_role:
+        name: aws_nodes
+        tasks_from: bastion_lb_diagnostics.yml
+      vars:
+        aws_nodes_bastion_lb_diag_output_dir: "{{ csr_approver_gather_dest }}"
+      when: csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool
+      tags:
+        - csr_approval
+
+- name: Capture bastion LB diagnostics after bootstrap failure (gather disabled)
+  ansible.builtin.include_role:
+    name: aws_nodes
+    tasks_from: bastion_lb_diagnostics.yml
+  vars:
+    aws_nodes_bastion_lb_diag_output_dir: "{{ csr_approver_install_dir }}/csr-fail/{{ cluster_name }}-{{ ansible_date_time.epoch }}"
+  when:
+    - csr_approver_bootstrap_wait.rc != 0
+    - csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool
+    - not (csr_approver_gather_on_failure | default(true) | bool)
+  tags:
+    - csr_approval
+
 - name: Fail if bootstrap did not complete
   ansible.builtin.fail:
     msg: >-
@@ -351,6 +414,11 @@
       Ensure api-int.{{ cluster_name }}.{{ base_domain }} resolves and port 6443 is reachable from bastion.
       {% if csr_approver_gather_on_failure | default(true) | bool and csr_approver_gather_dest is defined %}
       Logs gathered to: {{ csr_approver_gather_dest }}
+      {% if csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool %}
+      Bastion probes: {{ csr_approver_gather_dest }}/bastion-diagnostics.txt
+      {% endif %}
+      {% elif csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool %}
+      Bastion probes: under {{ csr_approver_install_dir }}/csr-fail/ (gather was disabled)
       {% endif %}
       Troubleshooting:
       1) API/MCS NLBs must use cross-zone load balancing when the API TG spans AZs (forge sets this on new runs; enable in AWS if upgrading an older stack).
@@ -396,7 +464,30 @@
     - csr_approval
 
 - name: Run CSR approval and wait for install complete
-  ansible.builtin.command:
-    cmd: "{{ csr_approver_install_dir }}/approve-and-wait.sh"
   tags:
     - csr_approval
+  block:
+    - name: Execute approve-and-wait script
+      ansible.builtin.command:
+        cmd: "{{ csr_approver_install_dir }}/approve-and-wait.sh"
+      register: csr_approver_install_complete_cmd
+
+  rescue:
+    - name: Capture bastion LB diagnostics after install-complete failure
+      ansible.builtin.include_role:
+        name: aws_nodes
+        tasks_from: bastion_lb_diagnostics.yml
+      vars:
+        aws_nodes_bastion_lb_diag_output_dir: "{{ csr_approver_install_dir }}/csr-fail/{{ cluster_name }}-{{ ansible_date_time.epoch }}"
+      when: csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool
+
+    - name: Propagate install-complete failure
+      ansible.builtin.fail:
+        msg: >-
+          openshift-install wait-for install-complete failed (approve-and-wait.sh).
+          {% if csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool %}
+          Bastion diagnostics (if applicable): {{ csr_approver_install_dir }}/csr-fail/
+          {% endif %}
+          Detail: {{ ansible_failed_result.msg | default('') }}
+          stdout: {{ ansible_failed_result.stdout | default('(none)') }}
+          stderr: {{ ansible_failed_result.stderr | default('(none)') }}

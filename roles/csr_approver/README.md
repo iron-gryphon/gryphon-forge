@@ -15,6 +15,7 @@ Watches for pending Certificate Signing Requests (CSRs) from Kubelet during Open
 | `csr_approver_skip_api_tg_preflight` | Skip controller-side check that `*-api-tg` has registered targets | false |
 | `csr_approver_gather_on_failure` | When bootstrap fails, gather logs and fetch to controller | true |
 | `csr_approver_gather_failure_dest` | Override path for gathered logs; default `playbook_dir/bootstrap-failure-logs/<cluster>-<epoch>` | (none) |
+| `csr_approver_bastion_lb_diagnostics_on_failure` | On CSR/bootstrap/API/install-complete failure, write `bastion-diagnostics.txt` (aws_nodes `bastion_lb_diagnostics.yml`) | true |
 
 ## Connectivity validation
 
@@ -24,7 +25,7 @@ Before waiting for bootstrap completion, the role validates:
 2. **API NLB targets (controller)** — Unless `csr_approver_skip_api_tg_preflight` is true, queries AWS for `<cluster>-api-tg` and fails fast if there are no registered targets (avoids a long bastion `wait_for` when the NLB has nothing to forward to).
 3. **TCP connectivity** — Port 6443 must be reachable from this host within `csr_approver_connectivity_timeout` seconds.
 
-If either check fails, the role fails with a clear message instead of blocking on `openshift-install wait-for bootstrap-complete`.
+If either check fails, the role fails with a clear message instead of blocking on `openshift-install wait-for bootstrap-complete`. When `csr_approver_bastion_lb_diagnostics_on_failure` is true, those failures also record bastion-side `getent`/TCP probes under `{{ csr_approver_install_dir }}/csr-fail/<cluster>-<epoch>/`.
 
 When bootstrap fails and `csr_approver_gather_on_failure` is true, the role:
 

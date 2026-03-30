@@ -9,5 +9,6 @@ aws_nodes_lb_target_discovery_delay: 8
 # After NLB/TG tasks, write AWS + optional bastion diagnostics under this directory (timestamped subfolder)
 aws_nodes_lb_validation_enabled: true
 aws_nodes_lb_validation_log_dir: "{{ install_dir }}/forge-lb-validation"
-# When bastion is in inventory, run DNS/TCP/bootstrap-filter checks from bastion and save stdout under the session dir
-aws_nodes_lb_validation_from_bastion: true
+# When true, LB validation writes bastion-diagnostics.txt during aws_nodes. Default false — csr_approver runs
+# the same probes only when a CSR/bootstrap/install-complete task fails (see bastion_lb_diagnostics.yml).
+aws_nodes_lb_validation_from_bastion: false

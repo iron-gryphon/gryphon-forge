@@ -229,6 +229,7 @@
     - name: Delete ignition IAM role
       amazon.aws.iam_role:
         name: "{{ cluster_name }}-ignition-reader"
+        delete_instance_profile: false
         state: absent
       ignore_errors: true
       tags:
