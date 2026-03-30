@@ -9,6 +9,59 @@
     - aws_nodes
     - ec2
 
+# AWS cloud-controller-manager resolves ClusterID from EC2 tags kubernetes.io/cluster/<infraID> (or legacy KubernetesCluster).
+# infraID must match openshift-install metadata.json (same value as install-config/cluster identity).
+- name: Stat OpenShift installer metadata.json
+  ansible.builtin.stat:
+    path: "{{ install_dir }}/metadata.json"
+  register: aws_nodes_metadata_json_stat
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Load installer metadata when infra ID not set explicitly
+  ansible.builtin.include_vars:
+    file: "{{ install_dir }}/metadata.json"
+    name: aws_nodes_install_metadata
+  when:
+    - aws_nodes_openshift_infrastructure_id | default('') | trim | length == 0
+    - aws_nodes_metadata_json_stat.stat.exists | default(false)
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Resolve OpenShift infrastructure ID for EC2 resource tags
+  ansible.builtin.set_fact:
+    aws_nodes_openshift_infrastructure_id_resolved: >-
+      {{
+        (aws_nodes_openshift_infrastructure_id | default('') | trim)
+        if (aws_nodes_openshift_infrastructure_id | default('') | trim | length > 0)
+        else ((aws_nodes_install_metadata | default({})).infraID | default(''))
+      }}
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Assert OpenShift infrastructure ID is available for AWS CCM EC2 tags
+  ansible.builtin.assert:
+    that:
+      - aws_nodes_openshift_infrastructure_id_resolved | length > 0
+    fail_msg: >-
+      Cannot resolve OpenShift infraID for kubernetes.io/cluster/* EC2 tags (AWS CCM ClusterID).
+      Set aws_nodes_openshift_infrastructure_id or ensure {{ install_dir }}/metadata.json exists with infraID
+      (run --tags ignition, or openshift-install create ignition-configs --dir={{ install_dir }}).
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Build common EC2 tags for AWS cloud-controller-manager
+  ansible.builtin.set_fact:
+    aws_nodes_ec2_kubernetes_cluster_tags:
+      "kubernetes.io/cluster/{{ aws_nodes_openshift_infrastructure_id_resolved }}": owned
+  tags:
+    - aws_nodes
+    - ec2
+
 - name: Validate EC2 prerequisites
   ansible.builtin.assert:
     that:
@@ -35,6 +88,8 @@
     - ec2
 
 - name: Launch bootstrap node
+  vars:
+    aws_nodes_instance_name_tag: "{{ cluster_name }}-bootstrap"
   amazon.aws.ec2_instance:
     name: "{{ cluster_name }}-bootstrap"
     image_id: "{{ aws_nodes_rhcos_ami_id_resolved }}"
@@ -48,10 +103,7 @@
           - "{{ aws_nodes_bootstrap_sg_id }}"
     iam_instance_profile: "{{ aws_nodes_ignition_instance_profile }}"
     user_data: "{{ aws_nodes_bootstrap_user_data }}"
-    tags:
-      Name: "{{ cluster_name }}-bootstrap"
-      cluster: "{{ cluster_name }}"
-      role: bootstrap
+    tags: "{{ aws_nodes_ec2_kubernetes_cluster_tags | combine({'Name': aws_nodes_instance_name_tag, 'cluster': cluster_name, 'role': 'bootstrap'}) }}"
     state: present
   register: aws_nodes_bootstrap_instance
   tags:
@@ -59,6 +111,8 @@
     - ec2
 
 - name: Launch master nodes
+  vars:
+    aws_nodes_instance_name_tag: "{{ cluster_name }}-master-{{ item }}"
   amazon.aws.ec2_instance:
     name: "{{ cluster_name }}-master-{{ item }}"
     image_id: "{{ aws_nodes_rhcos_ami_id_resolved }}"
@@ -72,10 +126,7 @@
           - "{{ aws_nodes_master_sg_id }}"
     iam_instance_profile: "{{ aws_nodes_ocp_master_instance_profile }}"
     user_data: "{{ aws_nodes_master_user_data }}"
-    tags:
-      Name: "{{ cluster_name }}-master-{{ item }}"
-      cluster: "{{ cluster_name }}"
-      role: master
+    tags: "{{ aws_nodes_ec2_kubernetes_cluster_tags | combine({'Name': aws_nodes_instance_name_tag, 'cluster': cluster_name, 'role': 'master'}) }}"
     state: present
   loop: "{{ range(0, master_count) | list }}"
   register: aws_nodes_master_launch
@@ -84,6 +135,8 @@
     - ec2
 
 - name: Launch worker nodes
+  vars:
+    aws_nodes_instance_name_tag: "{{ cluster_name }}-worker-{{ item }}"
   amazon.aws.ec2_instance:
     name: "{{ cluster_name }}-worker-{{ item }}"
     image_id: "{{ aws_nodes_rhcos_ami_id_resolved }}"
@@ -97,10 +150,7 @@
           - "{{ aws_nodes_worker_sg_id }}"
     iam_instance_profile: "{{ aws_nodes_ocp_worker_instance_profile }}"
     user_data: "{{ aws_nodes_worker_user_data }}"
-    tags:
-      Name: "{{ cluster_name }}-worker-{{ item }}"
-      cluster: "{{ cluster_name }}"
-      role: worker
+    tags: "{{ aws_nodes_ec2_kubernetes_cluster_tags | combine({'Name': aws_nodes_instance_name_tag, 'cluster': cluster_name, 'role': 'worker'}) }}"
     state: present
   loop: "{{ range(0, worker_count) | list }}"
   tags:
@@ -108,6 +158,8 @@
     - ec2
 
 - name: Launch GPU worker nodes
+  vars:
+    aws_nodes_instance_name_tag: "{{ cluster_name }}-gpu-worker-{{ item }}"
   amazon.aws.ec2_instance:
     name: "{{ cluster_name }}-gpu-worker-{{ item }}"
     image_id: "{{ aws_nodes_rhcos_ami_id_resolved }}"
@@ -121,10 +173,7 @@
           - "{{ aws_nodes_worker_sg_id }}"
     iam_instance_profile: "{{ aws_nodes_ocp_worker_instance_profile }}"
     user_data: "{{ aws_nodes_worker_user_data }}"
-    tags:
-      Name: "{{ cluster_name }}-gpu-worker-{{ item }}"
-      cluster: "{{ cluster_name }}"
-      role: gpu-worker
+    tags: "{{ aws_nodes_ec2_kubernetes_cluster_tags | combine({'Name': aws_nodes_instance_name_tag, 'cluster': cluster_name, 'role': 'gpu-worker'}) }}"
     state: present
   loop: "{{ range(0, gpu_worker_count | default(0)) | list }}"
   when: gpu_worker_count | default(0) | int > 0

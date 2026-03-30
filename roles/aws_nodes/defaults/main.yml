@@ -2,6 +2,9 @@
 # AWS Nodes role defaults
 # Override ec2_key_name and rhcos_ami_id in group_vars
 
+# OpenShift installer infraID for kubernetes.io/cluster/<infraID>=owned on EC2 (AWS CCM ClusterID). Empty = read infraID from install_dir/metadata.json.
+aws_nodes_openshift_infrastructure_id: ""
+
 # ELB target registration: retries when using EC2 describe (e.g. --tags load_balancers) — tag filters can lag after launch
 aws_nodes_lb_target_discovery_retries: 40
 aws_nodes_lb_target_discovery_delay: 8
