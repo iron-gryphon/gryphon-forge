@@ -56,8 +56,8 @@
 
 - name: Build common EC2 tags for AWS cloud-controller-manager
   ansible.builtin.set_fact:
-    aws_nodes_ec2_kubernetes_cluster_tags:
-      "kubernetes.io/cluster/{{ aws_nodes_openshift_infrastructure_id_resolved }}": owned
+    # Keys in YAML mappings are not Jinja-templated; build the tag dict in one expression.
+    aws_nodes_ec2_kubernetes_cluster_tags: "{{ {('kubernetes.io/cluster/' ~ (aws_nodes_openshift_infrastructure_id_resolved | string)): 'owned'} }}"
   tags:
     - aws_nodes
     - ec2

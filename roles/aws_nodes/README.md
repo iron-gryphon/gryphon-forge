@@ -27,7 +27,9 @@ Provisions EC2 instances, internal Load Balancers (NLB/ALB), and Route53 DNS rec
 
 ### EC2 tags and AWS cloud-controller-manager (ClusterID)
 
-`aws-cloud-controller-manager` needs a cluster scope on each node’s EC2 instance. It looks for a tag of the form **`kubernetes.io/cluster/<CLUSTER_INFRA_ID>=owned`** (or legacy `KubernetesCluster`), where **`CLUSTER_INFRA_ID` is the OpenShift installer `infraID`** — the same value in `metadata.json` next to `clusterName` / `clusterID` (produced by `openshift-install create ignition-configs`). Gryphon Forge sets that tag on bootstrap, masters, workers, and GPU workers. Override the ID only if you must point at a fixed value without `metadata.json` on the controller: `aws_nodes_openshift_infrastructure_id`.
+`aws-cloud-controller-manager` needs a cluster scope on each node’s EC2 instance. It looks for a tag of the form **`kubernetes.io/cluster/<CLUSTER_INFRA_ID>=owned`** (or legacy `KubernetesCluster`), where **`CLUSTER_INFRA_ID` is the OpenShift installer `infraID`** — the same value in `metadata.json` next to `clusterName` / `clusterID` (produced by `openshift-install create ignition-configs`). Gryphon Forge sets that tag on bootstrap, masters, workers, and GPU workers (the tag key is built at template time from the resolved `infraID`, not as a literal string). Override the ID only if you must point at a fixed value without `metadata.json` on the controller: `aws_nodes_openshift_infrastructure_id`.
+
+**Clusters already deployed with a wrong cluster tag or cloud config:** If EC2 instances were tagged with a literal or incorrect `kubernetes.io/cluster/...` key, or if `openshift-config/cloud-provider-config` / `kube-system/kube-cloud-cfg` (or equivalent) still reference the wrong `ClusterID`, AWS CCM will not match nodes to the cluster. Fix by retagging every OCP EC2 instance with **`kubernetes.io/cluster/<infraID>=owned`** where `<infraID>` matches `metadata.json`, aligning the in-cluster cloud provider config to that same `infraID`, or by destroying and reinstalling with a corrected playbook.
 
 ## Tasks
 
