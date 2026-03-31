@@ -76,6 +76,14 @@
         foundry_ingress_certificate_arn: >-
           {{ (((foundry | default({})).ingress_certificate_arn | default({})) | default({}))['value']
           | default((foundry | default({})).ingress_certificate_arn | default('')) }}
+        foundry_vault_api_security_group_id: >-
+          {{ (((foundry | default({})).vault_api_security_group_id | default(vault_api_security_group_id)) | default({}))['value']
+          | default((foundry | default({})).vault_api_security_group_id
+          | default(vault_api_security_group_id) | default(foundry_vault_api_security_group_id) | default('')) }}
+        foundry_vault_security_group_id: >-
+          {{ (((foundry | default({})).vault_security_group_id | default(vault_security_group_id)) | default({}))['value']
+          | default((foundry | default({})).vault_security_group_id
+          | default(vault_security_group_id) | default(foundry_vault_security_group_id) | default('')) }}
         foundry_base_domain: >-
           {{ (((foundry | default({})).ocp_base_domain | default(ocp_base_domain)) | default({}))['value']
           | default((foundry | default({})).ocp_base_domain | default(ocp_base_domain) | default('')) }}
@@ -184,6 +192,24 @@
       when:
         - foundry_vault_vpc_cidr is mapping
         - (foundry_vault_vpc_cidr | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Normalize foundry_vault_api_security_group_id when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_vault_api_security_group_id: "{{ foundry_vault_api_security_group_id['value'] }}"
+      when:
+        - foundry_vault_api_security_group_id is mapping
+        - (foundry_vault_api_security_group_id | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Normalize foundry_vault_security_group_id when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_vault_security_group_id: "{{ foundry_vault_security_group_id['value'] }}"
+      when:
+        - foundry_vault_security_group_id is mapping
+        - (foundry_vault_security_group_id | default({})).get('value') is defined
       tags:
         - always
 
@@ -538,6 +564,7 @@
     - csr_approval
     - validation
 
+# Bootstrap EC2 is not removed by this playbook until openshift-install wait-for bootstrap-complete succeeds (csr_approver).
 - name: Bootstrap - Approve CSRs and wait for cluster operators
   hosts: "{{ 'bastion' if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else 'local' }}"
   gather_facts: true

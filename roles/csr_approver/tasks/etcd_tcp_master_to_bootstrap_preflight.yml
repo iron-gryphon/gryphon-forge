@@ -1,0 +1,108 @@
+---
+# Before openshift-install wait-for bootstrap-complete: verify the first control-plane node can open
+# TCP to the bootstrap node's temporary etcd (2379 client, 2380 peer). SG/NACL path must allow this
+# inside the Vault VPC; retries cover SSH and etcd static-pod readiness after MCS comes up.
+# Run key stat and SSH from bastion when it is in inventory (private master IPs); else from the play host.
+- name: Resolve SSH key path for master → bootstrap etcd preflight
+  ansible.builtin.set_fact:
+    csr_approver_etcd_preflight_key_path: >-
+      {{ csr_approver_ocp_ssh_identity_path if (csr_approver_ocp_ssh_identity_path | default('') | length > 0)
+         else (ocp_ssh_private_key_path | default('') | expanduser) }}
+  run_once: true
+  delegate_to: "{{ (groups['bastion'] | default([]) | length > 0) | ternary('bastion', inventory_hostname) }}"
+
+- name: Stat SSH key for master → bootstrap etcd preflight
+  ansible.builtin.stat:
+    path: "{{ csr_approver_etcd_preflight_key_path }}"
+  register: csr_approver_etcd_preflight_key_stat
+  run_once: true
+  delegate_to: "{{ (groups['bastion'] | default([]) | length > 0) | ternary('bastion', inventory_hostname) }}"
+
+- name: Fail when OCP SSH private key missing (required for etcd TCP preflight)
+  ansible.builtin.fail:
+    msg: >-
+      Master → bootstrap etcd preflight needs the cluster SSH private key (RHCOS user core).
+      On bastion runs, ensure install sync created {{ csr_approver_ocp_ssh_identity_path | default('(not set)') }}
+      or set OCP_SSH_PRIVATE_KEY_PATH / ocp_ssh_private_key_path to the matching private key.
+  run_once: true
+  delegate_to: "{{ (groups['bastion'] | default([]) | length > 0) | ternary('bastion', inventory_hostname) }}"
+  when: not (csr_approver_etcd_preflight_key_stat.stat.exists | default(false))
+
+- name: Describe bootstrap instance for etcd preflight
+  amazon.aws.ec2_instance_info:
+    filters:
+      "tag:cluster": "{{ cluster_name }}"
+      "tag:role": "bootstrap"
+    region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region)) }}"
+  register: csr_approver_etcd_preflight_bootstrap
+  run_once: true
+  delegate_to: localhost
+  connection: local
+
+- name: Describe master instances for etcd preflight
+  amazon.aws.ec2_instance_info:
+    filters:
+      "tag:cluster": "{{ cluster_name }}"
+      "tag:role": "master"
+    region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region)) }}"
+  register: csr_approver_etcd_preflight_masters
+  run_once: true
+  delegate_to: localhost
+  connection: local
+
+- name: Require bootstrap and at least one master for etcd preflight
+  ansible.builtin.assert:
+    that:
+      - csr_approver_etcd_preflight_bootstrap.instances | default([]) | length > 0
+      - csr_approver_etcd_preflight_masters.instances | default([]) | length > 0
+    fail_msg: >-
+      etcd TCP preflight: need bootstrap and master instances tagged cluster={{ cluster_name }}.
+      Bootstrap count={{ csr_approver_etcd_preflight_bootstrap.instances | default([]) | length }},
+      masters count={{ csr_approver_etcd_preflight_masters.instances | default([]) | length }}.
+
+- name: Retry SSH to first master — open TCP to bootstrap :2379 and :2380
+  vars:
+    _boot_ip: "{{ csr_approver_etcd_preflight_bootstrap.instances[0].private_ip_address }}"
+    _master_ip: "{{ csr_approver_etcd_preflight_masters.instances[0].private_ip_address }}"
+  ansible.builtin.command:
+    argv:
+      - ssh
+      - -o
+      - StrictHostKeyChecking=no
+      - -o
+      - UserKnownHostsFile=/dev/null
+      - -o
+      - BatchMode=yes
+      - -o
+      - ConnectTimeout=15
+      - -i
+      - "{{ csr_approver_etcd_preflight_key_path }}"
+      - "core@{{ _master_ip }}"
+      - timeout
+      - "10"
+      - bash
+      - -c
+      - >-
+        timeout 3 bash -c "echo >/dev/tcp/{{ _boot_ip }}/2379"
+        && timeout 3 bash -c "echo >/dev/tcp/{{ _boot_ip }}/2380"
+  register: csr_approver_etcd_preflight_cmd
+  changed_when: false
+  failed_when: false
+  run_once: true
+  delegate_to: "{{ (groups['bastion'] | default([]) | length > 0) | ternary('bastion', inventory_hostname) }}"
+  until: csr_approver_etcd_preflight_cmd.rc == 0
+  retries: "{{ csr_approver_etcd_tcp_preflight_retries | int }}"
+  delay: "{{ csr_approver_etcd_tcp_preflight_delay | int }}"
+
+- name: Fail with etcd preflight troubleshooting when probes never succeeded
+  ansible.builtin.fail:
+    msg: >-
+      Master {{ csr_approver_etcd_preflight_masters.instances[0].private_ip_address | default('?') }} could not open
+      TCP to bootstrap etcd at {{ csr_approver_etcd_preflight_bootstrap.instances[0].private_ip_address | default('?') }}
+      on 2379/2380 after {{ csr_approver_etcd_tcp_preflight_retries }} attempts ({{ csr_approver_etcd_tcp_preflight_delay }}s apart).
+      Check: 1) Bootstrap and master ENIs include {{ cluster_name }}-bootstrap-sg / -master-sg and any gryphon-foundry vault_api/vault SGs;
+      2) gryphon-foundry vault_api allows 2379-2380 from vault_vpc_cidr; 3) Vault subnets use default NACL (allow all) or allow etcd ports;
+      4) etcd is listening on bootstrap (journalctl -u kubelet on bootstrap).
+      Last SSH rc={{ csr_approver_etcd_preflight_cmd.rc | default('n/a') }},
+      stderr={{ csr_approver_etcd_preflight_cmd.stderr | default('') | trim }}.
+  when: csr_approver_etcd_preflight_cmd.rc != 0

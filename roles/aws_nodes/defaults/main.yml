@@ -2,6 +2,21 @@
 # AWS Nodes role defaults
 # Override ec2_key_name and rhcos_ami_id in group_vars
 
+# Root EBS for RHCOS: AMI defaults are often ~16 GiB and trigger DiskPressure during OCP 4.x install.
+# Red Hat / AWS UPI practice: gp3 root ≥120 GiB for bootstrap and control plane; workers need enough for images and kubelet ephemeral storage.
+# amazon.aws.ec2_instance applies block devices only at launch — it does not grow existing root volumes (see roles/aws_nodes/README.md).
+# Empty: resolve RootDeviceName from describe-images for aws_nodes_rhcos_ami_id_resolved (required — /dev/sda1 vs /dev/xvda is AMI-specific).
+aws_nodes_rhcos_root_device_name: ""
+# When true, after launch describe instances/volumes and assert root EBS on RootDeviceName meets aws_nodes_*_root_volume_size_gb per role tag.
+aws_nodes_verify_root_ebs_size_after_launch: false
+aws_nodes_bootstrap_root_volume_size_gb: 120
+aws_nodes_master_root_volume_size_gb: 120
+aws_nodes_worker_root_volume_size_gb: 120
+aws_nodes_gpu_worker_root_volume_size_gb: 120
+
+# OpenShift installer infraID for kubernetes.io/cluster/<infraID>=owned on EC2 (AWS CCM ClusterID). Empty = read infraID from install_dir/metadata.json.
+aws_nodes_openshift_infrastructure_id: ""
+
 # ELB target registration: retries when using EC2 describe (e.g. --tags load_balancers) — tag filters can lag after launch
 aws_nodes_lb_target_discovery_retries: 40
 aws_nodes_lb_target_discovery_delay: 8

@@ -99,6 +99,7 @@
       tags:
         - destroy
 
+    # deploy_cluster.yml does not remove bootstrap until openshift-install wait-for bootstrap-complete (csr_approver).
     - name: Terminate EC2 instances
       amazon.aws.ec2_instance:
         instance_ids: "{{ ec2_instances.instances | map(attribute='instance_id') | list }}"
@@ -144,6 +145,7 @@
       community.aws.elb_network_lb:
         name: "{{ cluster_name }}-api"
         state: absent
+        region: "{{ foundry_region }}"
       tags:
         - destroy
 
@@ -151,6 +153,7 @@
       community.aws.elb_network_lb:
         name: "{{ cluster_name }}-mcs"
         state: absent
+        region: "{{ foundry_region }}"
       tags:
         - destroy
 
@@ -158,12 +161,16 @@
       amazon.aws.elb_application_lb:
         name: "{{ cluster_name }}-ingress"
         state: absent
+        region: "{{ foundry_region }}"
       when: foundry_ingress_certificate_arn | default('') | length > 0
+      tags:
+        - destroy
 
     - name: Delete Ingress NLB
       community.aws.elb_network_lb:
         name: "{{ cluster_name }}-ingress"
         state: absent
+        region: "{{ foundry_region }}"
       when: foundry_ingress_certificate_arn | default('') | length == 0
       tags:
         - destroy
@@ -172,6 +179,7 @@
       community.aws.elb_target_group:
         name: "{{ item }}"
         state: absent
+        region: "{{ foundry_region }}"
       loop: >-
         {{ [cluster_name + '-api-tg', cluster_name + '-mcs-tg', cluster_name + '-ingress-80-tg']
         + ([cluster_name + '-ingress-443-tg'] if (foundry_ingress_certificate_arn | default('') | length == 0) else []) }}
