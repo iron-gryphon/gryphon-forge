@@ -281,6 +281,126 @@
       tags:
         - csr_approval
 
+    - name: Optional — resolve SSH key path for master to bootstrap etcd TCP probe
+      ansible.builtin.set_fact:
+        csr_approver_etcd_probe_key_path: >-
+          {{ csr_approver_ocp_ssh_identity_path if (csr_approver_ocp_ssh_identity_path | default('') | length > 0)
+             else (ocp_ssh_private_key_path | default('') | expanduser) }}
+      run_once: true
+      delegate_to: localhost
+      when: csr_approver_bootstrap_etcd_master_tcp_probe | default(false) | bool
+      tags:
+        - csr_approval
+
+    - name: Optional — stat SSH key for master to bootstrap etcd TCP probe
+      ansible.builtin.stat:
+        path: "{{ csr_approver_etcd_probe_key_path }}"
+      register: csr_approver_etcd_probe_key_stat
+      run_once: true
+      delegate_to: localhost
+      when:
+        - csr_approver_bootstrap_etcd_master_tcp_probe | default(false) | bool
+        - csr_approver_etcd_probe_key_path is defined
+      tags:
+        - csr_approval
+
+    - name: Optional — discover masters for bootstrap etcd TCP probe
+      amazon.aws.ec2_instance_info:
+        filters:
+          "tag:cluster": "{{ cluster_name }}"
+          "tag:role": "master"
+        region: "{{ foundry_region | default(region) }}"
+      register: csr_approver_etcd_probe_masters
+      run_once: true
+      delegate_to: localhost
+      when:
+        - csr_approver_bootstrap_etcd_master_tcp_probe | default(false) | bool
+        - csr_approver_etcd_probe_key_stat is defined
+        - csr_approver_etcd_probe_key_stat.stat.exists | default(false)
+        - csr_approver_bootstrap_instance_info is not failed
+        - csr_approver_bootstrap_instance_info.instances | default([]) | length > 0
+      tags:
+        - csr_approval
+
+    - name: Optional — run TCP probes from first master to bootstrap etcd (SSH as core)
+      vars:
+        _boot_ip: "{{ csr_approver_bootstrap_instance_info.instances[0].private_ip_address }}"
+        _master_ip: "{{ csr_approver_etcd_probe_masters.instances[0].private_ip_address }}"
+        _etcd_probe_delegate: "{{ (groups['bastion'] | default([]) | length > 0) | ternary('bastion', 'localhost') }}"
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - StrictHostKeyChecking=no
+          - -o
+          - UserKnownHostsFile=/dev/null
+          - -o
+          - BatchMode=yes
+          - -i
+          - "{{ csr_approver_etcd_probe_key_path }}"
+          - "core@{{ _master_ip }}"
+          - bash
+          - -s
+        stdin: |
+          timeout 3 bash -c "echo >/dev/tcp/{{ _boot_ip }}/2379"
+          echo "2379_rc=$?"
+          timeout 3 bash -c "echo >/dev/tcp/{{ _boot_ip }}/2380"
+          echo "2380_rc=$?"
+      register: csr_approver_etcd_probe_shell
+      changed_when: false
+      failed_when: false
+      run_once: true
+      delegate_to: "{{ _etcd_probe_delegate }}"
+      when:
+        - csr_approver_bootstrap_etcd_master_tcp_probe | default(false) | bool
+        - csr_approver_etcd_probe_masters is defined
+        - csr_approver_etcd_probe_masters.instances | default([]) | length > 0
+      tags:
+        - csr_approval
+
+    - name: Optional — write master to bootstrap etcd TCP probe report
+      ansible.builtin.copy:
+        dest: "{{ csr_approver_gather_dest }}/master-to-bootstrap-etcd-tcp.txt"
+        mode: "0644"
+        content: |
+          Master → bootstrap etcd TCP probe (csr_approver_bootstrap_etcd_master_tcp_probe)
+          SSH jump: {{ (groups['bastion'] | default([]) | length > 0) | ternary('bastion', 'localhost') }}
+          SSH key path: {{ csr_approver_etcd_probe_key_path | default('n/a') }}
+          Key present: {{ (csr_approver_etcd_probe_key_stat.stat.exists | default(false))
+            if csr_approver_etcd_probe_key_stat is defined else 'n/a' }}
+          {% if csr_approver_bootstrap_instance_info is failed %}
+          Bootstrap AWS describe failed: {{ csr_approver_bootstrap_instance_info.msg | default('unknown') }}
+          {% elif csr_approver_bootstrap_instance_info.instances | default([]) | length == 0 %}
+          No bootstrap instance in AWS for tag:cluster={{ cluster_name }} tag:role=bootstrap
+          {% else %}
+          Bootstrap instance_id={{ csr_approver_bootstrap_instance_info.instances[0].instance_id | default('n/a') }}
+          state={{ csr_approver_bootstrap_instance_info.instances[0].state.name | default('n/a') }}
+          private_ip={{ csr_approver_bootstrap_instance_info.instances[0].private_ip_address | default('n/a') }}
+          {% endif %}
+          {% if csr_approver_etcd_probe_masters is not defined %}
+          Masters: not queried (missing key or no bootstrap IP).
+          {% elif csr_approver_etcd_probe_masters.instances | default([]) | length == 0 %}
+          Masters: none found for tag:cluster={{ cluster_name }} tag:role=master
+          {% else %}
+          Master probe host private_ip={{ csr_approver_etcd_probe_masters.instances[0].private_ip_address | default('n/a') }}
+          ---
+          {% if csr_approver_etcd_probe_shell is defined %}
+          remote_stdout_stderr:
+          {{ csr_approver_etcd_probe_shell.stdout | default('', true) | trim }}
+          {{ csr_approver_etcd_probe_shell.stderr | default('', true) | trim }}
+          ssh_local_rc={{ csr_approver_etcd_probe_shell.rc | default('n/a') }}
+          {% else %}
+          SSH probe not executed (see Key present / masters above).
+          {% endif %}
+          {% endif %}
+      delegate_to: localhost
+      run_once: true
+      when:
+        - csr_approver_gather_dest is defined
+        - csr_approver_bootstrap_etcd_master_tcp_probe | default(false) | bool
+      tags:
+        - csr_approval
+
     - name: Write AWS inspection report to failure logs
       ansible.builtin.copy:
         dest: "{{ csr_approver_gather_dest }}/aws-inspection-report.txt"
@@ -317,6 +437,8 @@
           Private IP: {{ inst.private_ip_address | default('N/A') }}
           Subnet: {{ inst.subnet_id | default('N/A') }}
           {% endfor %}
+          Control plane joins bootstrap etcd on TCP 2379/2380; if masters stall, verify {{ cluster_name }}-bootstrap-sg allows
+          those ports from the Vault VPC CIDR and from {{ cluster_name }}-master-sg (see aws_nodes role README).
           {% endif %}
         mode: "0644"
       delegate_to: localhost
@@ -438,6 +560,8 @@
       5) From bastion: timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443"
       and timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/22623"
       or curl -vk --connect-timeout 5 https://{{ api_int_dns_name }}:6443/
+      6) Masters must reach bootstrap etcd on the bootstrap private IP (TCP 2379/2380). Confirm {{ cluster_name }}-bootstrap-sg
+      ingress and that the bootstrap instance matches the IP embedded in ignition (re-run ignition if bootstrap was recreated).
       openshift-install stdout: {{ csr_approver_bootstrap_wait.stdout | default('(none)') }}
       openshift-install stderr: {{ csr_approver_bootstrap_wait.stderr | default('(none)') }}
   when: csr_approver_bootstrap_wait.rc != 0

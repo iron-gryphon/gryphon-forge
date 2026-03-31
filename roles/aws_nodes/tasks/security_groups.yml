@@ -1,6 +1,8 @@
 ---
 # Security groups for OpenShift UPI nodes in the Vault
 # API/MCS (6443, 22623) must allow from Vault VPC CIDR for NLB health checks (NLB has no SG).
+# Bootstrap etcd (2379 client, 2380 peer) must allow ingress from the Vault VPC (and from the master SG)
+# so control-plane nodes can join the bootstrap etcd before the static pods migrate to in-cluster etcd.
 # Bootstrap and master SGs use foundry_vault_vpc_cidr for control-plane ports (not only 10.0.0.0/8).
 # When foundry_bastion_security_group_id is set, also allow from bastion for API traffic.
 # SSH to RHCOS bootstrap: user core, key from install (same as ec2_key_name). Allow Nest CIDR + bastion SG
@@ -91,6 +93,13 @@
             'to_port': 22623,
             'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
             'rule_desc': 'MCS from Vault (NLB health checks)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 2379,
+            'to_port': 2380,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'etcd client/peer from Vault (masters join bootstrap etcd)'
           }
         ]
         + (
@@ -253,6 +262,28 @@
       Name: "{{ cluster_name }}-master-sg"
       cluster: "{{ cluster_name }}"
   register: aws_nodes_master_sg
+  tags:
+    - aws_nodes
+    - security_groups
+
+# Explicit ingress from the control-plane SG (in addition to Vault CIDR above) matches OpenShift AWS UPI
+# security templates and survives nonstandard VPC addressing without widening bootstrap etcd to the whole VPC.
+- name: Allow bootstrap etcd from control-plane security group
+  amazon.aws.ec2_security_group:
+    name: "{{ cluster_name }}-bootstrap-sg"
+    description: "Bootstrap node for {{ cluster_name }}"
+    vpc_id: "{{ foundry_vpc_id }}"
+    region: "{{ foundry_region }}"
+    state: present
+    purge_rules: false
+    purge_tags: false
+    rules:
+      - proto: tcp
+        from_port: 2379
+        to_port: 2380
+        group_id:
+          - "{{ aws_nodes_master_sg.group_id }}"
+        rule_desc: etcd client/peer from control-plane SG
   tags:
     - aws_nodes
     - security_groups

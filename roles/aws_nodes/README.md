@@ -47,7 +47,7 @@ OCP 4.x needs enough **ephemeral / root** space for container images, etcd data 
 
 1. **EC2 Prerequisites**: Resolve RHCOS AMI (priority: `rhcos_ami_id` → copy from `rhcos_ami_source_id` → fetch from metadata); resolve **`RootDeviceName`** for block device mappings via `amazon.aws.ec2_ami_info` when `aws_nodes_rhcos_root_device_name` is empty; create EC2 key pair when not set
 2. **Ignition S3**: Upload bootstrap/master/worker ignition to S3; create IAM roles and instance profiles. AWS user data is limited to 16KB; ignition configs often exceed this, so a stub referencing `s3://bucket/ignition.ign` is passed instead. **Bootstrap** uses `{{ cluster_name }}-ignition-reader` (S3 read only). **Masters** use `{{ cluster_name }}-ocp-master` (same S3 read plus OpenShift UPI master cloud-provider policy from `openshift/installer` `03_cluster_security.yaml` so `aws-cloud-controller-manager` can call EC2/ELB APIs). **Workers and GPU workers** use `{{ cluster_name }}-ocp-worker` (S3 read plus minimal `ec2:DescribeInstances` / `ec2:DescribeRegions`). Existing clusters created with the old single-profile layout need new instance profiles applied (replace IAM profile on instances or redeploy nodes) for CCM to clear `node.cloudprovider.kubernetes.io/uninitialized`.
-3. **Security Groups**: Create SGs for bootstrap, masters, workers
+3. **Security Groups**: Create SGs for bootstrap, masters, workers (see **Security group matrix** below)
 4. **EC2 Instances**: Resolve `infraID` (see table above), then launch bootstrap, master, worker, and optional GPU worker nodes with **`kubernetes.io/cluster/<infraID>=owned`** plus `Name` / `cluster` / `role`. Each launch supplies a **single** root `volumes` entry at `aws_nodes_rhcos_root_device_name_resolved` (AMI `RootDeviceName`) with the configured gp3 size. Optional: `aws_nodes_verify_root_ebs_size_after_launch` asserts DescribeVolumes size vs `aws_nodes_*_root_volume_size_gb` per `role` tag.
 5. **Load Balancers**: Create one internal **API NLB** for **api-int** with listeners **6443** (Kubernetes API) and **22623** (Machine Config Server). Masters pull Ignition from `https://api-int:22623/config/master`, so **22623 must be on the same hostname** Route53 aliases to (`api` / `api-int` → `{{ cluster_name }}-api`). A separate `{{ cluster_name }}-mcs` NLB is removed on apply (legacy). Ingress uses ALB (443/80) or NLB. NLBs use **cross-zone load balancing** so traffic from any AZ can reach bootstrap in one subnet. Bootstrap and masters register on the API target group via **instance IDs from EC2 launch**; bootstrap alone registers on **{{ cluster_name }}-mcs-tg** for :22623. If you run only `--tags load_balancers`, registration uses `ec2_instance_info` with retries until nodes appear.
 6. **Route53**: Register api, api-int, and *.apps records (aliases to the API NLB and ingress LB) in `foundry_internal_hosted_zone_id`.
@@ -58,3 +58,22 @@ OCP 4.x needs enough **ephemeral / root** space for container images, etcd data 
 All tasks use `amazon.aws` modules with proper `state` and `name` parameters to ensure idempotent runs.
 
 **Root volume size:** `amazon.aws.ec2_instance` supplies `BlockDeviceMappings` only when **launching** new instances. It does **not** resize an existing instance’s root EBS volume when you increase `aws_nodes_*_root_volume_size_gb`. Clusters already running with small disks need either **EBS modify-volume** (then extend the filesystem on the node per RHCOS/AWS guidance) or **replace** the instances (destroy/recreate or rolling replacement) so new launches pick up the larger size.
+
+## Security group matrix (bootstrap etcd and control plane)
+
+Forge applies security groups **before** EC2 launch (`security_groups.yml` then `ec2_instances.yml`), so rules exist before nodes boot. The **bootstrap** node runs temporary etcd; **control-plane** nodes must open TCP **2379** (client) and **2380** (peer) to the bootstrap **private IP** until etcd membership migrates after `openshift-install wait-for bootstrap-complete`. Forge does **not** terminate the bootstrap instance before that wait succeeds (teardown is `destroy_cluster.yml` only).
+
+| Traffic | Source | Target SG | Ports | Notes |
+|---------|--------|-----------|-------|--------|
+| NLB health / in-VPC API | Vault VPC primary IPv4 CIDR (from EC2 `DescribeVpcs`, else `foundry_vault_vpc_cidr`) | `<cluster>-bootstrap-sg` | 6443, 22623 | Same CIDR as master API ingress; NLB has no SG |
+| SSH / API / MCS from Nest | `foundry_nest_vpc_cidr` (optional) | bootstrap | 22, 6443, 22623 | Bastion over peering |
+| SSH / API / MCS from bastion | `foundry_bastion_security_group_id` (optional) | bootstrap | 22, 6443, 22623 | |
+| RFC1918 SSH (legacy) | 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 | bootstrap | 22 | |
+| **etcd bootstrap join** | Vault VPC CIDR | bootstrap | **2379–2380** | Masters in private subnets reach bootstrap etcd |
+| **etcd bootstrap join** | `<cluster>-master-sg` | bootstrap | **2379–2380** | Explicit reference to control-plane SG (merged with `purge_rules: false`) |
+| API / MCS / kubelet / etcd (in-cluster) | Vault VPC CIDR | `<cluster>-master-sg` | 6443, 22623, 10250, **2379–2380** | Ingress **to** masters (peer etcd); egress uses the module default allow-all unless you override elsewhere |
+| SSH to masters | Vault CIDR, Nest, bastion SG, RFC1918 | master | 22 | |
+
+**Bootstrap IP and ignition:** Master ignition references the bootstrap machine’s **private IP** for initial etcd endpoints. If the bootstrap instance is **replaced** and gets a new ENI address, regenerate ignition and reprovision masters (or align AWS so the bootstrap IP matches what the cluster expects). Running only `--tags ec2` after replacing bootstrap without re-running **ignition** can strand the cluster with a stale bootstrap address.
+
+**Egress:** `amazon.aws.ec2_security_group` leaves **egress open** (allow all) when `rules_egress` is omitted, which covers control-plane **egress** to the bootstrap IP on 2379/2380. Tightening master egress is possible but must preserve that path (and image pulls, etc.).

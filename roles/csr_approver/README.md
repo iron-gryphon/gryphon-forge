@@ -17,6 +17,7 @@ Watches for pending Certificate Signing Requests (CSRs) from Kubelet during Open
 | `csr_approver_gather_on_failure` | When bootstrap fails, gather logs and fetch to controller | true |
 | `csr_approver_gather_failure_dest` | Override path for gathered logs; default `playbook_dir/bootstrap-failure-logs/<cluster>-<epoch>` | (none) |
 | `csr_approver_bastion_lb_diagnostics_on_failure` | On CSR/bootstrap/API/install-complete failure, write `bastion-diagnostics.txt` (aws_nodes `bastion_lb_diagnostics.yml`) | true |
+| `csr_approver_bootstrap_etcd_master_tcp_probe` | On bootstrap failure with gather enabled, also write `master-to-bootstrap-etcd-tcp.txt` (SSH from bastion or localhost to first master as `core`, `/dev/tcp` to bootstrap :2379/:2380; needs OCP SSH key) | false |
 
 ## Connectivity validation
 
@@ -32,6 +33,7 @@ When bootstrap fails and `csr_approver_gather_on_failure` is true, the role:
 
 1. Runs `openshift-install gather bootstrap` and fetches `.openshift_install.log` plus the log bundle from bastion to the controller at `playbook_dir/bootstrap-failure-logs/<cluster>-<epoch>/`
 2. Inspects the API target group (`<cluster>-api-tg`) and bootstrap instance in AWS, writing `aws-inspection-report.txt` with target health status and instance state for troubleshooting
+3. Optionally (`csr_approver_bootstrap_etcd_master_tcp_probe: true`) records `master-to-bootstrap-etcd-tcp.txt` with bootstrap instance details and TCP probes from a control-plane node toward bootstrap etcd
 
 ## Prerequisites
 

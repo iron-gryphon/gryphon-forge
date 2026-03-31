@@ -538,6 +538,7 @@
     - csr_approval
     - validation
 
+# Bootstrap EC2 is not removed by this playbook until openshift-install wait-for bootstrap-complete succeeds (csr_approver).
 - name: Bootstrap - Approve CSRs and wait for cluster operators
   hosts: "{{ 'bastion' if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else 'local' }}"
   gather_facts: true
