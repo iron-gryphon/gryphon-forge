@@ -131,3 +131,40 @@
   tags:
     - aws_nodes
     - ec2
+
+# Block device DeviceName in RunInstances must match the AMI root (DescribeImages RootDeviceName).
+# A wrong name (e.g. /dev/xvda when the AMI root is /dev/sda1) adds a second volume; RHCOS still boots from the small default root.
+- name: Look up RHCOS AMI root device name (DescribeImages)
+  amazon.aws.ec2_ami_info:
+    image_ids:
+      - "{{ aws_nodes_rhcos_ami_id_resolved }}"
+    region: "{{ foundry_region }}"
+  register: aws_nodes_rhcos_ami_root_lookup
+  when: aws_nodes_rhcos_root_device_name | default('') | trim | length == 0
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Resolve RHCOS root block device name for ec2_instance volumes
+  ansible.builtin.set_fact:
+    aws_nodes_rhcos_root_device_name_resolved: >-
+      {{
+        (aws_nodes_rhcos_root_device_name | default('') | trim)
+        if (aws_nodes_rhcos_root_device_name | default('') | trim | length > 0)
+        else ((aws_nodes_rhcos_ami_root_lookup.images | default([]))[0].root_device_name | default('', true) | trim)
+      }}
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Assert RHCOS root device name is resolved for block device mappings
+  ansible.builtin.assert:
+    that:
+      - aws_nodes_rhcos_root_device_name_resolved | length > 0
+    fail_msg: >-
+      Could not resolve root block device name for AMI {{ aws_nodes_rhcos_ami_id_resolved }}.
+      Set aws_nodes_rhcos_root_device_name to the AMI RootDeviceName from
+      aws ec2 describe-images --image-ids {{ aws_nodes_rhcos_ami_id_resolved }} (often /dev/sda1 or /dev/xvda).
+  tags:
+    - aws_nodes
+    - ec2
