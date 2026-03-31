@@ -62,6 +62,22 @@
     - aws_nodes
     - ec2
 
+# Forge-created SGs only — do not tag foundry_vault_api_security_group_id / foundry_vault_security_group_id.
+# Multiple SGs on an ENI trigger AWS CCM to require this tag on the cluster node security group.
+- name: Tag Forge node security groups for AWS cloud-controller-manager
+  amazon.aws.ec2_tag:
+    region: "{{ foundry_region }}"
+    resource: "{{ item }}"
+    state: present
+    tags: "{{ aws_nodes_ec2_kubernetes_cluster_tags }}"
+  loop:
+    - "{{ aws_nodes_bootstrap_sg_id }}"
+    - "{{ aws_nodes_master_sg_id }}"
+    - "{{ aws_nodes_worker_sg_id }}"
+  tags:
+    - aws_nodes
+    - ec2
+
 - name: Validate EC2 prerequisites
   ansible.builtin.assert:
     that:

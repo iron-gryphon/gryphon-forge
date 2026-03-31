@@ -1,5 +1,6 @@
 ---
 # Security groups for OpenShift UPI nodes in the Vault
+# After infraID is resolved, ec2_instances.yml tags these Forge SGs (not foundry extras) with kubernetes.io/cluster/<infraID>=owned for AWS CCM.
 # ec2_instances.yml also attaches foundry_vault_api_security_group_id / foundry_vault_security_group_id when present
 # in foundry_output.json so ENIs match gryphon-foundry Terraform (API/MCS/etcd on vault_api; broad VPC on vault).
 # API/MCS (6443, 22623) must allow from Vault VPC CIDR for NLB health checks (NLB has no SG).
