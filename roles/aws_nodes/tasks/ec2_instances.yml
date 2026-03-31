@@ -95,7 +95,9 @@
   vars:
     _fv_api: "{{ foundry_vault_api_security_group_id | default('') | trim }}"
     _fv_vault: "{{ foundry_vault_security_group_id | default('') | trim }}"
-    aws_nodes_foundry_extra_security_groups: "{{ ([] + ((_fv_api | length > 0) | ternary([_fv_api], [])) + ((_fv_vault | length > 0) | ternary([_fv_vault], []))) }}"
+    _fv_api_sg: "{{ (_fv_api | length > 0) | ternary([_fv_api], []) }}"
+    _fv_vault_sg: "{{ (_fv_vault | length > 0) | ternary([_fv_vault], []) }}"
+    aws_nodes_foundry_extra_security_groups: "{{ [] + _fv_api_sg + _fv_vault_sg }}"
   tags:
     - aws_nodes
     - ec2
