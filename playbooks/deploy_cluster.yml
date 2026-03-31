@@ -102,6 +102,46 @@
             )
             | default('', true)
           }}
+        foundry_vault_amazon_provided_dns: >-
+          {{
+            (((foundry | default({})).vault_vpc_amazon_provided_dns | default(vault_vpc_amazon_provided_dns)) | default({}))['value']
+            | default(
+                (foundry | default({})).vault_vpc_amazon_provided_dns
+                | default(vault_vpc_amazon_provided_dns)
+                | default(foundry_vault_amazon_provided_dns)
+                | default('')
+              )
+          }}
+        foundry_ocp_api_int_fqdn: >-
+          {{
+            (((foundry | default({})).ocp_api_int_fqdn | default(ocp_api_int_fqdn)) | default({}))['value']
+            | default(
+                (foundry | default({})).ocp_api_int_fqdn
+                | default(ocp_api_int_fqdn)
+                | default(foundry_ocp_api_int_fqdn)
+                | default('')
+              )
+          }}
+        foundry_create_ocp_private_zone: >-
+          {{
+            (((foundry | default({})).create_ocp_private_zone | default(create_ocp_private_zone)) | default({}))['value']
+            | default(
+                (foundry | default({})).create_ocp_private_zone
+                | default(create_ocp_private_zone)
+                | default(foundry_create_ocp_private_zone)
+                | default(false)
+              )
+          }}
+        foundry_ocp_route53_zone_source: >-
+          {{
+            (((foundry | default({})).ocp_route53_zone_source | default(ocp_route53_zone_source)) | default({}))['value']
+            | default(
+                (foundry | default({})).ocp_route53_zone_source
+                | default(ocp_route53_zone_source)
+                | default(foundry_ocp_route53_zone_source)
+                | default('')
+              )
+          }}
       tags:
         - always
 
@@ -210,6 +250,53 @@
       when:
         - foundry_vault_security_group_id is mapping
         - (foundry_vault_security_group_id | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Normalize vault_vpc_amazon_provided_dns when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_vault_amazon_provided_dns: "{{ vault_vpc_amazon_provided_dns['value'] | default('', true) }}"
+      when:
+        - vault_vpc_amazon_provided_dns is defined
+        - vault_vpc_amazon_provided_dns is mapping
+        - (vault_vpc_amazon_provided_dns | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Normalize ocp_api_int_fqdn when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_ocp_api_int_fqdn: "{{ ocp_api_int_fqdn['value'] | default('', true) }}"
+      when:
+        - ocp_api_int_fqdn is defined
+        - ocp_api_int_fqdn is mapping
+        - (ocp_api_int_fqdn | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Normalize create_ocp_private_zone when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_create_ocp_private_zone: "{{ create_ocp_private_zone['value'] | default(false) | bool }}"
+      when:
+        - create_ocp_private_zone is defined
+        - create_ocp_private_zone is mapping
+        - (create_ocp_private_zone | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Normalize ocp_route53_zone_source when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_ocp_route53_zone_source: "{{ ocp_route53_zone_source['value'] | default('', true) }}"
+      when:
+        - ocp_route53_zone_source is defined
+        - ocp_route53_zone_source is mapping
+        - (ocp_route53_zone_source | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Coerce null foundry_internal_hosted_zone_id from Terraform JSON
+      ansible.builtin.set_fact:
+        foundry_internal_hosted_zone_id: ""
+      when: (foundry_internal_hosted_zone_id is none) or ((foundry_internal_hosted_zone_id | string | lower) in ['none', 'null'])
       tags:
         - always
 
@@ -352,6 +439,7 @@
         - ami_copy
         - load_balancers
         - route53
+        - dns_gate
 
 # Runs only when bastion was added via add_host (foundry provides bastion_public_ip/bastion_public_dns)
 # Bastion downloads openshift-install and oc from Red Hat mirror (Linux binaries, version-compatible)

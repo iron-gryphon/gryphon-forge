@@ -66,7 +66,7 @@ ansible-playbook playbooks/destroy_cluster.yml --syntax-check
 ansible-lint
 ```
 
-**Optional — validate foundry JSON before deploy** (no AWS calls):
+**Optional — validate foundry JSON before deploy** (loads JSON locally; also calls **Route53** `GetHostedZone` to confirm the internal zone is associated with `vault_vpc_id` — requires AWS credentials):
 
 ```bash
 ansible-playbook playbooks/preflight.yml -i inventory/hosts.yml \
@@ -98,7 +98,7 @@ In **gryphon-foundry**, after `terraform output -json > foundry_output.json`, ru
 This project expects `foundry_output.json` (or Terraform remote state) with:
 
 - `vault_vpc_id`, `private_subnet_ids`, `bastion_security_group_id`, `internal_hosted_zone_id`, `region`
-- Optional: `ocp_base_domain`, `ocp_cluster_name`, `vault_vpc_cidr` (see `deploy_cluster.yml` first play for normalization)
+- Optional: `ocp_base_domain`, `ocp_cluster_name`, `vault_vpc_cidr`, `vault_vpc_amazon_provided_dns`, `ocp_api_int_fqdn`, `create_ocp_private_zone`, `ocp_route53_zone_source` (see `deploy_cluster.yml` first play for normalization; Route53 outputs align with gryphon-foundry `outputs.tf`)
 
 **Preferred:** Pass via `-e @foundry_output.json` to avoid modifying `inventory/group_vars/all.yml`:
 

@@ -21,6 +21,16 @@ aws_nodes_openshift_infrastructure_id: ""
 aws_nodes_lb_target_discovery_retries: 40
 aws_nodes_lb_target_discovery_delay: 8
 
+# Before worker/GPU EC2: assert api/api-int exist in foundry_internal_hosted_zone_id and the zone is associated with foundry_vpc_id
+aws_nodes_dns_gate_enabled: true
+# Optional: set explicitly (e.g. 10.1.0.2) for dig checks; when empty and derive is true, computed as <vault CIDR network host>.2
+aws_nodes_dns_gate_vpc_resolver_ip: ""
+aws_nodes_dns_gate_derive_vpc_resolver_from_vault_cidr: true
+# Requires UDP/53 reachability to the VPC resolver from the controller (VPN/peering). Default off — Route53 API checks still run.
+aws_nodes_dns_gate_vpc_resolver_query: false
+# Run dig @vpc_resolver from bastion (needs dig, routing/peering to Vault VPC DNS, and inventory group bastion)
+aws_nodes_dns_gate_delegate_vpc_resolver_query_to_bastion: false
+
 # After NLB/TG tasks, write AWS + optional bastion diagnostics under this directory (timestamped subfolder)
 aws_nodes_lb_validation_enabled: true
 aws_nodes_lb_validation_log_dir: "{{ install_dir }}/forge-lb-validation"
