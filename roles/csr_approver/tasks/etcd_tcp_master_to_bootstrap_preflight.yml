@@ -78,13 +78,11 @@
       - -i
       - "{{ csr_approver_etcd_preflight_key_path }}"
       - "core@{{ _master_ip }}"
-      - timeout
-      - "10"
       - bash
-      - -c
-      - >-
-        timeout 3 bash -c "echo >/dev/tcp/{{ _boot_ip }}/2379"
-        && timeout 3 bash -c "echo >/dev/tcp/{{ _boot_ip }}/2380"
+      - -s
+    stdin: |
+      timeout 3 bash -c "echo >/dev/tcp/{{ _boot_ip }}/2379" &&
+      timeout 3 bash -c "echo >/dev/tcp/{{ _boot_ip }}/2380"
   register: csr_approver_etcd_preflight_cmd
   changed_when: false
   failed_when: false
