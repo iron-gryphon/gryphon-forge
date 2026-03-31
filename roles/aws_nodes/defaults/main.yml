@@ -2,6 +2,15 @@
 # AWS Nodes role defaults
 # Override ec2_key_name and rhcos_ami_id in group_vars
 
+# Root EBS for RHCOS: AMI defaults are often ~16 GiB and trigger DiskPressure during OCP 4.x install.
+# Red Hat / AWS UPI practice: gp3 root ≥120 GiB for bootstrap and control plane; workers need enough for images and kubelet ephemeral storage.
+# amazon.aws.ec2_instance applies block devices only at launch — it does not grow existing root volumes (see roles/aws_nodes/README.md).
+aws_nodes_rhcos_root_device_name: "/dev/xvda"
+aws_nodes_bootstrap_root_volume_size_gb: 120
+aws_nodes_master_root_volume_size_gb: 120
+aws_nodes_worker_root_volume_size_gb: 120
+aws_nodes_gpu_worker_root_volume_size_gb: 120
+
 # OpenShift installer infraID for kubernetes.io/cluster/<infraID>=owned on EC2 (AWS CCM ClusterID). Empty = read infraID from install_dir/metadata.json.
 aws_nodes_openshift_infrastructure_id: ""
 

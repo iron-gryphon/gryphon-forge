@@ -24,6 +24,15 @@ Provisions EC2 instances, internal Load Balancers (NLB/ALB), and Route53 DNS rec
 | `aws_nodes_lb_target_discovery_retries` | EC2 describe retries when registering NLB targets (`--tags load_balancers`) | 40 |
 | `aws_nodes_lb_target_discovery_delay` | Seconds between retries | 8 |
 | `aws_nodes_openshift_infrastructure_id` | Installer **infraID** for `kubernetes.io/cluster/<infraID>=owned` on every OCP EC2 instance. Empty (default): read `infraID` from `{{ install_dir }}/metadata.json` after ignition | `""` |
+| `aws_nodes_rhcos_root_device_name` | Root block device name in the EC2 API for the RHCOS AMI (typically `/dev/xvda` on AWS) | `/dev/xvda` |
+| `aws_nodes_bootstrap_root_volume_size_gb` | Bootstrap node root EBS size (gp3) | `120` |
+| `aws_nodes_master_root_volume_size_gb` | Control plane root EBS size (gp3) | `120` |
+| `aws_nodes_worker_root_volume_size_gb` | Worker root EBS size (gp3) | `120` |
+| `aws_nodes_gpu_worker_root_volume_size_gb` | GPU worker root EBS size (gp3) | `120` |
+
+### Root disk size (bootstrap, masters, workers)
+
+OCP 4.x needs enough **ephemeral / root** space for container images, etcd data (masters), and kubelet thresholds. The RHCOS AMI default root volume is often ~16 GiB, which leads to **DiskPressure**, evictions, and failed static pods (for example apiserver or controller-manager) during bootstrap. The role sets an explicit **gp3** root volume (default **120 GiB**) on bootstrap, masters, workers, and GPU workers, aligned with Red Hat and AWS UPI sizing practice.
 
 ### EC2 tags and AWS cloud-controller-manager (ClusterID)
 
@@ -44,3 +53,5 @@ Provisions EC2 instances, internal Load Balancers (NLB/ALB), and Route53 DNS rec
 ## Idempotency
 
 All tasks use `amazon.aws` modules with proper `state` and `name` parameters to ensure idempotent runs.
+
+**Root volume size:** `amazon.aws.ec2_instance` supplies `BlockDeviceMappings` only when **launching** new instances. It does **not** resize an existing instance’s root EBS volume when you increase `aws_nodes_*_root_volume_size_gb`. Clusters already running with small disks need either **EBS modify-volume** (then extend the filesystem on the node per RHCOS/AWS guidance) or **replace** the instances (destroy/recreate or rolling replacement) so new launches pick up the larger size.
