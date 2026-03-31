@@ -28,3 +28,7 @@ csr_approver_ocp_ssh_identity_path: ""
 # When true and bootstrap gather runs, SSH (core) to the first master and run /dev/tcp probes to bootstrap :2379/:2380;
 # writes master-to-bootstrap-etcd-tcp.txt. Uses bastion as jump when present (private IPs), else localhost.
 csr_approver_bootstrap_etcd_master_tcp_probe: false
+# Before wait-for bootstrap-complete: SSH to first master and open /dev/tcp to bootstrap :2379 and :2380 (retries for SSH/etcd readiness).
+csr_approver_bootstrap_etcd_tcp_preflight: true
+csr_approver_etcd_tcp_preflight_retries: 36
+csr_approver_etcd_tcp_preflight_delay: 10

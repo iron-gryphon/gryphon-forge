@@ -99,6 +99,7 @@
       tags:
         - destroy
 
+    # deploy_cluster.yml does not remove bootstrap until openshift-install wait-for bootstrap-complete (csr_approver).
     - name: Terminate EC2 instances
       amazon.aws.ec2_instance:
         instance_ids: "{{ ec2_instances.instances | map(attribute='instance_id') | list }}"

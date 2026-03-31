@@ -15,6 +15,9 @@ foundry_rhcos_ami_id: ""  # Option B: RHCOS AMI imported by foundry from mirror.
 foundry_vault_vpc_cidr: "10.1.0.0/16"  # Vault VPC CIDR; used for install-config networking.machineNetwork
 foundry_nest_vpc_cidr: ""  # Nest VPC CIDR; when bastion is in Nest, allows API/MCS from bastion via peering
 foundry_bastion_security_group_id: ""
+# When set from gryphon-foundry outputs, aws_nodes attaches these to bootstrap and master ENIs (with cluster SGs).
+foundry_vault_api_security_group_id: ""
+foundry_vault_security_group_id: ""
 foundry_internal_hosted_zone_id: ""
 foundry_base_domain: ""  # From foundry ocp_base_domain; when set, overrides base_domain for DNS zone alignment
 ocp_cluster_name: ""  # From foundry ocp_cluster_name; deploy_cluster maps to cluster_name when set

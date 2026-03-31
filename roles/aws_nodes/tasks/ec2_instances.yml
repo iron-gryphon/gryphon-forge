@@ -87,6 +87,19 @@
     - aws_nodes
     - ec2
 
+# Optional Foundry SGs (vault_api: API/MCS/bootstrap etcd; vault: broad intra-VPC TCP/UDP) align node ENIs with Terraform NLB/target rules.
+- name: Compose ENI security groups for bootstrap and masters (cluster SGs + optional Foundry)
+  ansible.builtin.set_fact:
+    aws_nodes_bootstrap_network_groups: "{{ [aws_nodes_bootstrap_sg_id] + aws_nodes_foundry_extra_security_groups }}"
+    aws_nodes_master_network_groups: "{{ [aws_nodes_master_sg_id] + aws_nodes_foundry_extra_security_groups }}"
+  vars:
+    _fv_api: "{{ foundry_vault_api_security_group_id | default('') | trim }}"
+    _fv_vault: "{{ foundry_vault_security_group_id | default('') | trim }}"
+    aws_nodes_foundry_extra_security_groups: "{{ ([] + ((_fv_api | length > 0) | ternary([_fv_api], [])) + ((_fv_vault | length > 0) | ternary([_fv_vault], []))) }}"
+  tags:
+    - aws_nodes
+    - ec2
+
 - name: Launch bootstrap node
   vars:
     aws_nodes_instance_name_tag: "{{ cluster_name }}-bootstrap"
@@ -99,8 +112,7 @@
     network_interfaces:
       - subnet_id: "{{ foundry_private_subnets[0] }}"
         assign_public_ip: false
-        groups:
-          - "{{ aws_nodes_bootstrap_sg_id }}"
+        groups: "{{ aws_nodes_bootstrap_network_groups }}"
     iam_instance_profile: "{{ aws_nodes_ignition_instance_profile }}"
     user_data: "{{ aws_nodes_bootstrap_user_data }}"
     volumes:
@@ -128,8 +140,7 @@
     network_interfaces:
       - subnet_id: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
         assign_public_ip: false
-        groups:
-          - "{{ aws_nodes_master_sg_id }}"
+        groups: "{{ aws_nodes_master_network_groups }}"
     iam_instance_profile: "{{ aws_nodes_ocp_master_instance_profile }}"
     user_data: "{{ aws_nodes_master_user_data }}"
     volumes:

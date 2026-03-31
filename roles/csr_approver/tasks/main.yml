@@ -192,6 +192,12 @@
           Bastion diagnostics (if applicable): {{ csr_approver_install_dir }}/csr-fail/
           {% endif %}
 
+- name: Preflight — master can reach bootstrap etcd (TCP 2379/2380)
+  tags:
+    - csr_approval
+  when: csr_approver_bootstrap_etcd_tcp_preflight | default(true) | bool
+  ansible.builtin.include_tasks: etcd_tcp_master_to_bootstrap_preflight.yml
+
 - name: Wait for bootstrap completion
   ansible.builtin.command:
     cmd: "{{ csr_approver_openshift_install_cmd }} wait-for bootstrap-complete --dir={{ csr_approver_install_dir }} --log-level=info"
