@@ -90,7 +90,7 @@
     modify_targets: false
     state: present
     region: "{{ foundry_region }}"
-  register: aws_nodes_ingress_80_tg
+  register: aws_nodes_ingress_alb_http_tg
   when: foundry_ingress_certificate_arn | default('') | length > 0
   tags:
     - aws_nodes
@@ -111,12 +111,12 @@
           - CertificateArn: "{{ foundry_ingress_certificate_arn }}"
         DefaultActions:
           - Type: forward
-            TargetGroupArn: "{{ aws_nodes_ingress_80_tg.target_group_arn }}"
+            TargetGroupArn: "{{ aws_nodes_ingress_alb_http_tg.target_group_arn }}"
       - Protocol: HTTP
         Port: 80
         DefaultActions:
           - Type: forward
-            TargetGroupArn: "{{ aws_nodes_ingress_80_tg.target_group_arn }}"
+            TargetGroupArn: "{{ aws_nodes_ingress_alb_http_tg.target_group_arn }}"
     state: present
     region: "{{ foundry_region }}"
   when: foundry_ingress_certificate_arn | default('') | length > 0
@@ -150,7 +150,7 @@
     modify_targets: false
     state: present
     region: "{{ foundry_region }}"
-  register: aws_nodes_ingress_80_tg
+  register: aws_nodes_ingress_nlb_80_tg
   when: foundry_ingress_certificate_arn | default('') | length == 0
   tags:
     - aws_nodes
@@ -172,7 +172,7 @@
         Port: 80
         DefaultActions:
           - Type: forward
-            TargetGroupArn: "{{ aws_nodes_ingress_80_tg.target_group_arn }}"
+            TargetGroupArn: "{{ aws_nodes_ingress_nlb_80_tg.target_group_arn }}"
     state: present
     region: "{{ foundry_region }}"
   register: aws_nodes_ingress_nlb
