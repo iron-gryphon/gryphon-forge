@@ -1,0 +1,63 @@
+---
+# Worker / GPU worker EC2 — runs only after internal NLB, Route53 (api/api-int), and dns_gate_before_workers.yml.
+
+- name: Launch worker nodes
+  vars:
+    aws_nodes_instance_name_tag: "{{ cluster_name }}-worker-{{ item }}"
+  amazon.aws.ec2_instance:
+    name: "{{ cluster_name }}-worker-{{ item }}"
+    image_id: "{{ aws_nodes_rhcos_ami_id_resolved }}"
+    instance_type: "{{ worker_instance_type }}"
+    key_name: "{{ ec2_key_name }}"
+    vpc_subnet_id: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
+    network_interfaces:
+      - subnet_id: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
+        assign_public_ip: false
+        groups:
+          - "{{ aws_nodes_worker_sg_id }}"
+    iam_instance_profile: "{{ aws_nodes_ocp_worker_instance_profile }}"
+    user_data: "{{ aws_nodes_worker_user_data }}"
+    volumes:
+      - device_name: "{{ aws_nodes_rhcos_root_device_name_resolved }}"
+        ebs:
+          volume_size: "{{ aws_nodes_worker_root_volume_size_gb | int }}"
+          volume_type: gp3
+          delete_on_termination: true
+    tags: "{{ aws_nodes_ec2_kubernetes_cluster_tags | combine({'Name': aws_nodes_instance_name_tag, 'cluster': cluster_name, 'role': 'worker'}) }}"
+    state: present
+  loop: "{{ range(0, worker_count) | list }}"
+  register: aws_nodes_worker_launch
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Launch GPU worker nodes
+  vars:
+    aws_nodes_instance_name_tag: "{{ cluster_name }}-gpu-worker-{{ item }}"
+  amazon.aws.ec2_instance:
+    name: "{{ cluster_name }}-gpu-worker-{{ item }}"
+    image_id: "{{ aws_nodes_rhcos_ami_id_resolved }}"
+    instance_type: "{{ gpu_worker_instance_type }}"
+    key_name: "{{ ec2_key_name }}"
+    vpc_subnet_id: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
+    network_interfaces:
+      - subnet_id: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
+        assign_public_ip: false
+        groups:
+          - "{{ aws_nodes_worker_sg_id }}"
+    iam_instance_profile: "{{ aws_nodes_ocp_worker_instance_profile }}"
+    user_data: "{{ aws_nodes_worker_user_data }}"
+    volumes:
+      - device_name: "{{ aws_nodes_rhcos_root_device_name_resolved }}"
+        ebs:
+          volume_size: "{{ aws_nodes_gpu_worker_root_volume_size_gb | int }}"
+          volume_type: gp3
+          delete_on_termination: true
+    tags: "{{ aws_nodes_ec2_kubernetes_cluster_tags | combine({'Name': aws_nodes_instance_name_tag, 'cluster': cluster_name, 'role': 'gpu-worker'}) }}"
+    state: present
+  loop: "{{ range(0, gpu_worker_count | default(0)) | list }}"
+  when: gpu_worker_count | default(0) | int > 0
+  register: aws_nodes_gpu_worker_launch
+  tags:
+    - aws_nodes
+    - ec2

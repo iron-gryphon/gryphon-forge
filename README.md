@@ -20,6 +20,9 @@ This project expects a `foundry_output.json` or access to the Terraform remote s
 * `private_subnet_ids` or `vault_private_subnet_ids` / `ocp_upi_subnet_ids`: For the multi-AZ distribution of nodes.
 * `bastion_security_group_id`: To allow administrative access via the VPN.
 * `internal_hosted_zone_id`: To register OCP DNS records (api, api-int, *.apps).
+* `vault_vpc_amazon_provided_dns`: From foundry (`cidrhost(vault_vpc_cidr, 2)`); Forge prefers this for optional `dig` / bastion checks against the Vault resolver (same value workers use via AmazonProvidedDNS).
+* `ocp_api_int_fqdn`: Expected `api-int.<ocp_cluster_name>.<ocp_base_domain>`; Forge asserts it matches install-config DNS when present.
+* `create_ocp_private_zone` / `ocp_route53_zone_source`: Describe how the zone was created (foundry private zone vs existing Route53); informational in Forge, documented for operators.
 * `ocp_base_domain`: (Optional) When set by foundry, overrides `base_domain` so DNS records align with the hosted zone. Required when using internal domains (e.g. fsi.internal) with gryphon-foundry's private hosted zone.
 * `ocp_cluster_name`: (Optional) When set by foundry, overrides `cluster_name` (resource tags, load balancers, `install_dir` path) so Forge matches the name Terraform publishes.
 * `ingress_certificate_arn`: (Optional) When present, gryphon-forge uses an ALB with HTTPS for ingress instead of an NLB. Create via gryphon-foundry with `create_ingress_certificate = true`.

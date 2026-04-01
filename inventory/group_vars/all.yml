@@ -19,6 +19,13 @@ foundry_bastion_security_group_id: ""
 foundry_vault_api_security_group_id: ""
 foundry_vault_security_group_id: ""
 foundry_internal_hosted_zone_id: ""
+# From gryphon-foundry terraform output vault_vpc_amazon_provided_dns (cidrhost(vault_vpc_cidr, 2)); preferred for optional dig / bastion DNS checks
+foundry_vault_amazon_provided_dns: ""
+# From foundry ocp_api_int_fqdn; deploy_cluster asserts this matches api-int.<cluster>.<base_domain> when set
+foundry_ocp_api_int_fqdn: ""
+# From foundry create_ocp_private_zone / ocp_route53_zone_source (Route53 integration hints)
+foundry_create_ocp_private_zone: false
+foundry_ocp_route53_zone_source: ""
 foundry_base_domain: ""  # From foundry ocp_base_domain; when set, overrides base_domain for DNS zone alignment
 ocp_cluster_name: ""  # From foundry ocp_cluster_name; deploy_cluster maps to cluster_name when set
 foundry_region: ""

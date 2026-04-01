@@ -1,0 +1,176 @@
+---
+# Bootstrap + control plane EC2 only. Workers run after NLB + Route53 + dns_gate (api-int must resolve in Vault VPC).
+# Requires rhcos_ami_id - get from: openshift-install coreos print-stream-json | jq -r '.architectures.x86_64.images.aws.regions["REGION"].image'
+# Ignition configs are uploaded to S3 and referenced via stub (AWS user data limit 16KB)
+
+- name: Set up S3-backed ignition (bucket, IAM, upload)
+  ansible.builtin.include_tasks: ec2_ignition_s3.yml
+  tags:
+    - aws_nodes
+    - ec2
+
+# AWS cloud-controller-manager resolves ClusterID from EC2 tags kubernetes.io/cluster/<infraID> (or legacy KubernetesCluster).
+# infraID must match openshift-install metadata.json (same value as install-config/cluster identity).
+- name: Stat OpenShift installer metadata.json
+  ansible.builtin.stat:
+    path: "{{ install_dir }}/metadata.json"
+  register: aws_nodes_metadata_json_stat
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Load installer metadata when infra ID not set explicitly
+  ansible.builtin.include_vars:
+    file: "{{ install_dir }}/metadata.json"
+    name: aws_nodes_install_metadata
+  when:
+    - aws_nodes_openshift_infrastructure_id | default('') | trim | length == 0
+    - aws_nodes_metadata_json_stat.stat.exists | default(false)
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Resolve OpenShift infrastructure ID for EC2 resource tags
+  ansible.builtin.set_fact:
+    aws_nodes_openshift_infrastructure_id_resolved: >-
+      {{
+        (aws_nodes_openshift_infrastructure_id | default('') | trim)
+        if (aws_nodes_openshift_infrastructure_id | default('') | trim | length > 0)
+        else ((aws_nodes_install_metadata | default({})).infraID | default(''))
+      }}
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Assert OpenShift infrastructure ID is available for AWS CCM EC2 tags
+  ansible.builtin.assert:
+    that:
+      - aws_nodes_openshift_infrastructure_id_resolved | length > 0
+    fail_msg: >-
+      Cannot resolve OpenShift infraID for kubernetes.io/cluster/* EC2 tags (AWS CCM ClusterID).
+      Set aws_nodes_openshift_infrastructure_id or ensure {{ install_dir }}/metadata.json exists with infraID
+      (run --tags ignition, or openshift-install create ignition-configs --dir={{ install_dir }}).
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Build common EC2 tags for AWS cloud-controller-manager
+  ansible.builtin.set_fact:
+    # Keys in YAML mappings are not Jinja-templated; build the tag dict in one expression.
+    aws_nodes_ec2_kubernetes_cluster_tags: "{{ {('kubernetes.io/cluster/' ~ (aws_nodes_openshift_infrastructure_id_resolved | string)): 'owned'} }}"
+  tags:
+    - aws_nodes
+    - ec2
+
+# Forge-created SGs only — do not tag foundry_vault_api_security_group_id / foundry_vault_security_group_id.
+# Multiple SGs on an ENI trigger AWS CCM to require this tag on the cluster node security group.
+- name: Tag Forge node security groups for AWS cloud-controller-manager
+  amazon.aws.ec2_tag:
+    region: "{{ foundry_region }}"
+    resource: "{{ item }}"
+    state: present
+    tags: "{{ aws_nodes_ec2_kubernetes_cluster_tags }}"
+  loop:
+    - "{{ aws_nodes_bootstrap_sg_id }}"
+    - "{{ aws_nodes_master_sg_id }}"
+    - "{{ aws_nodes_worker_sg_id }}"
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Validate EC2 prerequisites
+  ansible.builtin.assert:
+    that:
+      - aws_nodes_rhcos_ami_id_resolved is defined
+      - aws_nodes_rhcos_ami_id_resolved | length > 0
+      - ec2_key_name is defined
+      - ec2_key_name | length > 0
+    fail_msg: "Set rhcos_ami_id and ec2_key_name in group_vars. Get RHCOS AMI from OpenShift release metadata."
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Validate foundry subnets for EC2
+  ansible.builtin.assert:
+    that:
+      - foundry_private_subnets is defined
+      - foundry_private_subnets | length >= 3
+    fail_msg: >-
+      foundry_private_subnets is empty or has fewer than 3 subnets.
+      Load foundry outputs: ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json
+      Or ensure foundry_output.json at {{ foundry_output_path | expanduser }} contains vault_private_subnet_ids (or ocp_upi_subnet_ids).
+  tags:
+    - aws_nodes
+    - ec2
+
+# Optional Foundry SGs (vault_api: API/MCS/bootstrap etcd; vault: broad intra-VPC TCP/UDP) align node ENIs with Terraform NLB/target rules.
+- name: Compose ENI security groups for bootstrap and masters (cluster SGs + optional Foundry)
+  ansible.builtin.set_fact:
+    aws_nodes_bootstrap_network_groups: "{{ [aws_nodes_bootstrap_sg_id] + aws_nodes_foundry_extra_security_groups }}"
+    aws_nodes_master_network_groups: "{{ [aws_nodes_master_sg_id] + aws_nodes_foundry_extra_security_groups }}"
+  vars:
+    _fv_api: "{{ foundry_vault_api_security_group_id | default('') | trim }}"
+    _fv_vault: "{{ foundry_vault_security_group_id | default('') | trim }}"
+    _fv_api_sg: "{{ (_fv_api | length > 0) | ternary([_fv_api], []) }}"
+    _fv_vault_sg: "{{ (_fv_vault | length > 0) | ternary([_fv_vault], []) }}"
+    aws_nodes_foundry_extra_security_groups: "{{ [] + _fv_api_sg + _fv_vault_sg }}"
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Launch bootstrap node
+  vars:
+    aws_nodes_instance_name_tag: "{{ cluster_name }}-bootstrap"
+  amazon.aws.ec2_instance:
+    name: "{{ cluster_name }}-bootstrap"
+    image_id: "{{ aws_nodes_rhcos_ami_id_resolved }}"
+    instance_type: "m6i.large"
+    key_name: "{{ ec2_key_name }}"
+    vpc_subnet_id: "{{ foundry_private_subnets[0] }}"
+    network_interfaces:
+      - subnet_id: "{{ foundry_private_subnets[0] }}"
+        assign_public_ip: false
+        groups: "{{ aws_nodes_bootstrap_network_groups }}"
+    iam_instance_profile: "{{ aws_nodes_ignition_instance_profile }}"
+    user_data: "{{ aws_nodes_bootstrap_user_data }}"
+    volumes:
+      - device_name: "{{ aws_nodes_rhcos_root_device_name_resolved }}"
+        ebs:
+          volume_size: "{{ aws_nodes_bootstrap_root_volume_size_gb | int }}"
+          volume_type: gp3
+          delete_on_termination: true
+    tags: "{{ aws_nodes_ec2_kubernetes_cluster_tags | combine({'Name': aws_nodes_instance_name_tag, 'cluster': cluster_name, 'role': 'bootstrap'}) }}"
+    state: present
+  register: aws_nodes_bootstrap_instance
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Launch master nodes
+  vars:
+    aws_nodes_instance_name_tag: "{{ cluster_name }}-master-{{ item }}"
+  amazon.aws.ec2_instance:
+    name: "{{ cluster_name }}-master-{{ item }}"
+    image_id: "{{ aws_nodes_rhcos_ami_id_resolved }}"
+    instance_type: "{{ master_instance_type }}"
+    key_name: "{{ ec2_key_name }}"
+    vpc_subnet_id: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
+    network_interfaces:
+      - subnet_id: "{{ foundry_private_subnets[item % foundry_private_subnets | length] }}"
+        assign_public_ip: false
+        groups: "{{ aws_nodes_master_network_groups }}"
+    iam_instance_profile: "{{ aws_nodes_ocp_master_instance_profile }}"
+    user_data: "{{ aws_nodes_master_user_data }}"
+    volumes:
+      - device_name: "{{ aws_nodes_rhcos_root_device_name_resolved }}"
+        ebs:
+          volume_size: "{{ aws_nodes_master_root_volume_size_gb | int }}"
+          volume_type: gp3
+          delete_on_termination: true
+    tags: "{{ aws_nodes_ec2_kubernetes_cluster_tags | combine({'Name': aws_nodes_instance_name_tag, 'cluster': cluster_name, 'role': 'master'}) }}"
+    state: present
+  loop: "{{ range(0, master_count) | list }}"
+  register: aws_nodes_master_launch
+  tags:
+    - aws_nodes
+    - ec2
