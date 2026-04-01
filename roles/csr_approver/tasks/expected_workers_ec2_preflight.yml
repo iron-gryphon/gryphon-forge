@@ -9,7 +9,7 @@
       "instance-state-name":
         - pending
         - running
-    region: "{{ foundry_region }}"
+    region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region)) }}"
   register: csr_approver_ec2_worker_instances
   delegate_to: localhost
   connection: local
@@ -41,7 +41,7 @@
       "instance-state-name":
         - pending
         - running
-    region: "{{ foundry_region }}"
+    region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region)) }}"
   register: csr_approver_ec2_gpu_worker_instances
   delegate_to: localhost
   connection: local
