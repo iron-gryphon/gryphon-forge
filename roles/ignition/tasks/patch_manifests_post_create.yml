@@ -1,0 +1,170 @@
+---
+# After openshift-install create manifests — align DNS operator with foundry private zone (AWS UPI / private clusters).
+# Optionally set default IngressController loadBalancer.dnsManagementPolicy to Unmanaged when Forge owns *.apps in Route53.
+
+- name: Resolve Route53 private hosted zone ID for manifest patches (unwrap Terraform output shape)
+  ansible.builtin.set_fact:
+    ignition_forge_private_zone_id: >-
+      {{
+        (foundry_internal_hosted_zone_id['value']
+         if (foundry_internal_hosted_zone_id is mapping
+             and (foundry_internal_hosted_zone_id | default({})).get('value') is defined)
+         else foundry_internal_hosted_zone_id) | default('', true) | trim
+      }}
+  tags:
+    - ignition
+
+- name: Find candidate DNS manifest files from openshift-install
+  ansible.builtin.find:
+    paths: "{{ install_dir }}/manifests"
+    patterns:
+      - "cluster-dns-02-config.yaml"
+      - "cluster-dns-02-config.yml"
+      - "cluster-dns-default.yaml"
+      - "cluster-dns-default.yml"
+    file_type: file
+  register: ignition_dns_manifest_find
+  tags:
+    - ignition
+
+- name: Resolve path to config.openshift.io DNS cluster manifest
+  ansible.builtin.set_fact:
+    ignition_dns_manifest_path: "{{ item.path }}"
+  loop: "{{ ignition_dns_manifest_find.files | default([]) }}"
+  vars:
+    ignition_dns_manifest_doc: "{{ lookup('file', item.path) | from_yaml }}"
+  when:
+    - ignition_dns_manifest_path is not defined
+    - (ignition_dns_manifest_doc.kind | default('')) == 'DNS'
+    - ((ignition_dns_manifest_doc.metadata | default({})).name | default('')) == 'cluster'
+  tags:
+    - ignition
+
+- name: Merge foundry private zone id into DNS cluster manifest
+  when:
+    - ignition_patch_dns_aws_private_zone | bool
+    - ignition_forge_private_zone_id | length > 0
+    - ignition_dns_manifest_path is defined
+  tags:
+    - ignition
+  block:
+    - name: Read DNS cluster manifest
+      ansible.builtin.slurp:
+        path: "{{ ignition_dns_manifest_path }}"
+      register: ignition_dns_manifest_slurp
+
+    - name: Parse DNS manifest for patching
+      ansible.builtin.set_fact:
+        ignition_dns_doc_in: "{{ ignition_dns_manifest_slurp.content | b64decode | from_yaml }}"
+
+    - name: Merge spec.platform.aws.privateZone.id (preserve other keys)
+      ansible.builtin.set_fact:
+        ignition_dns_spec_new: >-
+          {{
+            ignition_dns_doc_in.spec | default({})
+            | combine({'platform': ignition_dns_plat_new}, recursive=true)
+          }}
+      vars:
+        ignition_dns_plat_in: "{{ (ignition_dns_doc_in.spec | default({})).platform | default({}) }}"
+        ignition_dns_aws_in: "{{ ignition_dns_plat_in.aws | default({}) }}"
+        ignition_dns_pz_in: "{{ ignition_dns_aws_in.privateZone | default({}) }}"
+        ignition_dns_pz_new: "{{ ignition_dns_pz_in | combine({'id': ignition_forge_private_zone_id}, recursive=true) }}"
+        ignition_dns_aws_new: "{{ ignition_dns_aws_in | combine({'privateZone': ignition_dns_pz_new}, recursive=true) }}"
+        ignition_dns_plat_new: "{{ ignition_dns_plat_in | combine({'aws': ignition_dns_aws_new}, recursive=true) }}"
+
+    - name: Build full patched DNS document
+      ansible.builtin.set_fact:
+        ignition_dns_manifest_patched: "{{ ignition_dns_doc_in | combine({'spec': ignition_dns_spec_new}, recursive=true) }}"
+
+    - name: Write patched DNS cluster manifest
+      ansible.builtin.copy:
+        dest: "{{ ignition_dns_manifest_path }}"
+        content: "{{ ignition_dns_manifest_patched | to_nice_yaml(indent=2) }}\n"
+        mode: "0644"
+
+- name: Fail when DNS private zone patch is required but DNS manifest was not found
+  ansible.builtin.fail:
+    msg: >-
+      ignition_patch_dns_aws_private_zone is true and foundry_internal_hosted_zone_id is set, but no DNS/cluster manifest
+      was found under {{ install_dir }}/manifests (expected cluster-dns-02-config or similar). Re-run openshift-install
+      create manifests or check install_dir.
+  when:
+    - ignition_patch_dns_aws_private_zone | bool
+    - ignition_forge_private_zone_id | length > 0
+    - ignition_dns_manifest_path is not defined
+  tags:
+    - ignition
+
+- name: Find YAML manifests under openshift/ for default IngressController
+  ansible.builtin.find:
+    paths: "{{ install_dir }}/openshift"
+    patterns:
+      - "*.yml"
+      - "*.yaml"
+    file_type: file
+  register: ignition_openshift_manifest_find
+  tags:
+    - ignition
+
+- name: Resolve path to default IngressController manifest
+  ansible.builtin.set_fact:
+    ignition_ingresscontroller_manifest_path: "{{ item.path }}"
+  loop: "{{ ignition_openshift_manifest_find.files | default([]) }}"
+  vars:
+    ignition_ingress_manifest_doc: "{{ lookup('file', item.path) | from_yaml }}"
+  when:
+    - ignition_ingresscontroller_manifest_path is not defined
+    - (ignition_ingress_manifest_doc.kind | default('')) == 'IngressController'
+    - ((ignition_ingress_manifest_doc.metadata | default({})).name | default('')) == 'default'
+  tags:
+    - ignition
+
+- name: Merge Unmanaged DNS policy into default IngressController manifest
+  when:
+    - ignition_ingress_default_dns_management_unmanaged | bool
+    - ignition_ingresscontroller_manifest_path is defined
+  tags:
+    - ignition
+  block:
+    - name: Read default IngressController manifest
+      ansible.builtin.slurp:
+        path: "{{ ignition_ingresscontroller_manifest_path }}"
+      register: ignition_ingress_ic_slurp
+
+    - name: Parse IngressController manifest for patching
+      ansible.builtin.set_fact:
+        ignition_ingress_ic_in: "{{ ignition_ingress_ic_slurp.content | b64decode | from_yaml }}"
+
+    - name: Merge endpointPublishingStrategy.loadBalancer.dnsManagementPolicy
+      ansible.builtin.set_fact:
+        ignition_ingress_ic_spec_new: >-
+          {{
+            ignition_ingress_ic_in.spec | default({})
+            | combine({'endpointPublishingStrategy': ignition_ingress_eps_new}, recursive=true)
+          }}
+      vars:
+        ignition_ingress_eps_in: "{{ (ignition_ingress_ic_in.spec | default({})).endpointPublishingStrategy | default({}) }}"
+        ignition_ingress_lb_in: "{{ ignition_ingress_eps_in.loadBalancer | default({}) }}"
+        ignition_ingress_lb_new: "{{ ignition_ingress_lb_in | combine({'dnsManagementPolicy': 'Unmanaged'}, recursive=true) }}"
+        ignition_ingress_eps_new: "{{ ignition_ingress_eps_in | combine({'loadBalancer': ignition_ingress_lb_new}, recursive=true) }}"
+
+    - name: Build full patched IngressController document
+      ansible.builtin.set_fact:
+        ignition_ingress_ic_patched: "{{ ignition_ingress_ic_in | combine({'spec': ignition_ingress_ic_spec_new}, recursive=true) }}"
+
+    - name: Write patched default IngressController manifest
+      ansible.builtin.copy:
+        dest: "{{ ignition_ingresscontroller_manifest_path }}"
+        content: "{{ ignition_ingress_ic_patched | to_nice_yaml(indent=2) }}\n"
+        mode: "0644"
+
+- name: Warn when Unmanaged ingress DNS is requested but default IngressController manifest was not found
+  ansible.builtin.debug:
+    msg: >-
+      ignition_ingress_default_dns_management_unmanaged is true but no IngressController/default manifest was found
+      under {{ install_dir }}/openshift — skipping patch (installer layout may differ for this version).
+  when:
+    - ignition_ingress_default_dns_management_unmanaged | bool
+    - ignition_ingresscontroller_manifest_path is not defined
+  tags:
+    - ignition

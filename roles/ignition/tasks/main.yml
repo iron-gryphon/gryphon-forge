@@ -194,6 +194,11 @@
   tags:
     - ignition
 
+- name: Patch manifests (DNS private zone, optional Unmanaged ingress DNS)
+  ansible.builtin.include_tasks: patch_manifests_post_create.yml
+  tags:
+    - ignition
+
 # openshift-install emits per-zone filenames (e.g. master-machines-0.yaml), not the legacy single-file names.
 # See openshift/installer docs/user/aws/install_upi.md — leaving these in breaks Machine API vs UPI and can stall bootstrap (incl. CNI/OVN).
 - name: Find Machine / MachineSet manifests to strip for UPI

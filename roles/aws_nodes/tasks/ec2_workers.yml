@@ -61,3 +61,34 @@
   tags:
     - aws_nodes
     - ec2
+
+- name: Assert worker EC2 launch produced expected instances (failures are not silent)
+  ansible.builtin.assert:
+    that:
+      - aws_nodes_worker_launch.results | default([]) | length == (worker_count | int)
+      - _aws_nodes_worker_launch_ids | length == (worker_count | int)
+      - aws_nodes_worker_launch.results | default([]) | selectattr('failed', 'defined') | selectattr('failed', 'equalto', true) | list | length == 0
+    fail_msg: >-
+      Worker EC2 launch did not produce {{ worker_count }} instance(s). Got {{ _aws_nodes_worker_launch_ids | length }} id(s).
+      Inspect aws_nodes_worker_launch and task output above for AWS errors.
+  vars:
+    _aws_nodes_worker_launch_ids: "{{ aws_nodes_worker_launch.results | default([]) | map(attribute='instance_ids') | flatten | unique | list }}"
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Assert GPU worker EC2 launch produced expected instances
+  ansible.builtin.assert:
+    that:
+      - aws_nodes_gpu_worker_launch.results | default([]) | length == (gpu_worker_count | int)
+      - _aws_nodes_gpu_launch_ids | length == (gpu_worker_count | int)
+      - aws_nodes_gpu_worker_launch.results | default([]) | selectattr('failed', 'defined') | selectattr('failed', 'equalto', true) | list | length == 0
+    fail_msg: >-
+      GPU worker EC2 launch did not produce {{ gpu_worker_count }} instance(s). Got {{ _aws_nodes_gpu_launch_ids | length }} id(s).
+      Inspect aws_nodes_gpu_worker_launch and task output above for AWS errors.
+  when: (gpu_worker_count | default(0) | int) > 0
+  vars:
+    _aws_nodes_gpu_launch_ids: "{{ aws_nodes_gpu_worker_launch.results | default([]) | map(attribute='instance_ids') | flatten | unique | list }}"
+  tags:
+    - aws_nodes
+    - ec2

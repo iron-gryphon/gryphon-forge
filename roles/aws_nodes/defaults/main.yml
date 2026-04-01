@@ -21,6 +21,9 @@ aws_nodes_openshift_infrastructure_id: ""
 aws_nodes_lb_target_discovery_retries: 40
 aws_nodes_lb_target_discovery_delay: 8
 
+# When worker_count and gpu_worker_count are both 0, attach masters to ingress TGs (compact / router on control plane).
+aws_nodes_ingress_register_masters_when_no_workers: true
+
 # Before worker/GPU EC2: assert api/api-int exist in foundry_internal_hosted_zone_id and the zone is associated with foundry_vpc_id
 aws_nodes_dns_gate_enabled: true
 # Optional: set explicitly (e.g. 10.1.0.2) for dig checks; when empty and derive is true, computed as <vault CIDR network host>.2

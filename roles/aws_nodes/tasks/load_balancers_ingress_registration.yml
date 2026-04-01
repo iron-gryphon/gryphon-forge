@@ -1,0 +1,277 @@
+---
+# Register worker (and optionally master) instance IDs on ingress NLB/ALB target groups.
+# Runs after ec2_workers.yml so launch facts exist on full runs; supports --tags load_balancers via EC2 discovery.
+
+- name: Resolve expected worker-style node count for ingress registration
+  ansible.builtin.set_fact:
+    aws_nodes_ingress_expected_workers: "{{ (worker_count | default(0) | int) + (gpu_worker_count | default(0) | int) }}"
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
+- name: Describe ingress target groups by name (works when LB create ran in an earlier run)
+  community.aws.elb_target_group_info:
+    names: "{{ _aws_nodes_ingress_tg_names }}"
+    region: "{{ foundry_region }}"
+  register: aws_nodes_ingress_tg_info
+  vars:
+    _aws_nodes_ingress_tg_names: >-
+      {{
+        (foundry_ingress_certificate_arn | default('') | length > 0)
+        | ternary(
+            [cluster_name ~ '-ingress-80-tg'],
+            [cluster_name ~ '-ingress-443-tg', cluster_name ~ '-ingress-80-tg']
+          )
+      }}
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
+- name: Require ingress target groups to exist before registering instance targets
+  ansible.builtin.assert:
+    that:
+      - aws_nodes_ingress_tg_info.target_groups | default([]) | length > 0
+    fail_msg: >-
+      No ingress target groups found ({{ _aws_nodes_ingress_tg_names | join(', ') }}). Run with --tags load_balancers
+      (or full aws_nodes) so {{ cluster_name }}-ingress NLB/ALB exists before registering workers.
+  vars:
+    _aws_nodes_ingress_tg_names: >-
+      {{
+        (foundry_ingress_certificate_arn | default('') | length > 0)
+        | ternary(
+            [cluster_name ~ '-ingress-80-tg'],
+            [cluster_name ~ '-ingress-443-tg', cluster_name ~ '-ingress-80-tg']
+          )
+      }}
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
+- name: Build worker GPU instance IDs from EC2 launch when GPU workers ran
+  ansible.builtin.set_fact:
+    aws_nodes_lb_ingress_gpu_ids: >-
+      {{
+        ([] if (aws_nodes_gpu_worker_launch.skipped | default(true))
+         else (aws_nodes_gpu_worker_launch.results | default([]) | map(attribute='instance_ids') | flatten | list))
+      }}
+  when:
+    - aws_nodes_ingress_expected_workers | int > 0
+    - aws_nodes_gpu_worker_launch is defined
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
+- name: Default empty GPU ingress IDs when launch did not run
+  ansible.builtin.set_fact:
+    aws_nodes_lb_ingress_gpu_ids: []
+  when: aws_nodes_lb_ingress_gpu_ids is not defined
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
+- name: Build worker instance IDs from EC2 worker launch results
+  ansible.builtin.set_fact:
+    aws_nodes_lb_ingress_worker_ids: >-
+      {{
+        (
+          (aws_nodes_worker_launch.results | default([]) | map(attribute='instance_ids') | flatten | list)
+          + (aws_nodes_lb_ingress_gpu_ids | default([]))
+        ) | unique | list
+      }}
+  when:
+    - aws_nodes_ingress_expected_workers | int > 0
+    - aws_nodes_worker_launch is defined
+    - not (aws_nodes_worker_launch.skipped | default(false))
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
+- name: Wait for worker-tagged EC2 instances when launch facts missing or incomplete
+  when:
+    - aws_nodes_ingress_expected_workers | int > 0
+    - >-
+      (aws_nodes_lb_ingress_worker_ids | default([]) | length) < (aws_nodes_ingress_expected_workers | int)
+  block:
+    - name: Wait for worker role instances (EC2 API / tag visibility)
+      amazon.aws.ec2_instance_info:
+        filters:
+          "tag:cluster": "{{ cluster_name }}"
+          "tag:role": "worker"
+          "instance-state-name":
+            - pending
+            - running
+        region: "{{ foundry_region }}"
+      register: aws_nodes_lb_ingress_worker_query
+      until: (aws_nodes_lb_ingress_worker_query.instances | default([]) | length) >= (worker_count | default(0) | int)
+      retries: "{{ aws_nodes_lb_target_discovery_retries | int }}"
+      delay: "{{ aws_nodes_lb_target_discovery_delay | int }}"
+      when: (worker_count | default(0) | int) > 0
+      tags:
+        - aws_nodes
+        - ec2
+        - load_balancers
+
+    - name: Wait for GPU worker role instances (EC2 API / tag visibility)
+      amazon.aws.ec2_instance_info:
+        filters:
+          "tag:cluster": "{{ cluster_name }}"
+          "tag:role": "gpu-worker"
+          "instance-state-name":
+            - pending
+            - running
+        region: "{{ foundry_region }}"
+      register: aws_nodes_lb_ingress_gpu_query
+      until: (aws_nodes_lb_ingress_gpu_query.instances | default([]) | length) >= (gpu_worker_count | default(0) | int)
+      retries: "{{ aws_nodes_lb_target_discovery_retries | int }}"
+      delay: "{{ aws_nodes_lb_target_discovery_delay | int }}"
+      when: (gpu_worker_count | default(0) | int) > 0
+      tags:
+        - aws_nodes
+        - ec2
+        - load_balancers
+
+    - name: Set ingress worker IDs from EC2 discovery
+      ansible.builtin.set_fact:
+        aws_nodes_lb_ingress_worker_ids: >-
+          {{
+            (
+              (
+                ((aws_nodes_lb_ingress_worker_query.instances | default([]))
+                 if ((worker_count | default(0) | int) > 0
+                     and (aws_nodes_lb_ingress_worker_query is defined))
+                 else [])
+                | map(attribute='instance_id') | list
+              )
+              + (
+                ((aws_nodes_lb_ingress_gpu_query.instances | default([]))
+                 if ((gpu_worker_count | default(0) | int) > 0
+                     and (aws_nodes_lb_ingress_gpu_query is defined))
+                 else [])
+                | map(attribute='instance_id') | list
+              )
+            ) | unique | list
+          }}
+      tags:
+        - aws_nodes
+        - ec2
+        - load_balancers
+
+- name: Build master instance IDs from EC2 master launch (compact — no workers)
+  ansible.builtin.set_fact:
+    aws_nodes_lb_ingress_master_ids: >-
+      {{
+        aws_nodes_master_launch.results | default([])
+        | map(attribute='instance_ids')
+        | flatten | list
+        | unique | list
+      }}
+  when:
+    - aws_nodes_ingress_expected_workers | int == 0
+    - aws_nodes_ingress_register_masters_when_no_workers | bool
+    - aws_nodes_master_launch is defined
+    - not (aws_nodes_master_launch.skipped | default(false))
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
+- name: Discover master instance IDs for ingress when launch facts missing (compact)
+  when:
+    - aws_nodes_ingress_expected_workers | int == 0
+    - aws_nodes_ingress_register_masters_when_no_workers | bool
+    - (aws_nodes_lb_ingress_master_ids | default([]) | length) < (master_count | default(3) | int)
+  block:
+    - name: Wait for master role instances
+      amazon.aws.ec2_instance_info:
+        filters:
+          "tag:cluster": "{{ cluster_name }}"
+          "tag:role": "master"
+          "instance-state-name":
+            - pending
+            - running
+        region: "{{ foundry_region }}"
+      register: aws_nodes_lb_ingress_master_query
+      until: (aws_nodes_lb_ingress_master_query.instances | default([]) | length) >= (master_count | int)
+      retries: "{{ aws_nodes_lb_target_discovery_retries | int }}"
+      delay: "{{ aws_nodes_lb_target_discovery_delay | int }}"
+      tags:
+        - aws_nodes
+        - ec2
+        - load_balancers
+
+    - name: Set ingress master IDs from EC2 discovery
+      ansible.builtin.set_fact:
+        aws_nodes_lb_ingress_master_ids: >-
+          {{
+            aws_nodes_lb_ingress_master_query.instances | default([])
+            | map(attribute='instance_id')
+            | unique | list
+          }}
+      tags:
+        - aws_nodes
+        - ec2
+        - load_balancers
+
+- name: Choose instance IDs to attach to ingress target groups
+  ansible.builtin.set_fact:
+    aws_nodes_lb_ingress_target_ids: >-
+      {{
+        (aws_nodes_ingress_expected_workers | int > 0)
+        | ternary(
+            aws_nodes_lb_ingress_worker_ids | default([]),
+            (
+              (aws_nodes_lb_ingress_master_ids | default([]))
+              if (aws_nodes_ingress_register_masters_when_no_workers | bool)
+              else []
+            )
+          )
+      }}
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
+- name: Assert worker count matches expectation before ingress registration
+  ansible.builtin.assert:
+    that:
+      - (aws_nodes_lb_ingress_worker_ids | default([]) | length) >= (aws_nodes_ingress_expected_workers | int)
+    fail_msg: >-
+      Expected {{ aws_nodes_ingress_expected_workers }} worker/gpu-worker instance(s) for ingress registration;
+      EC2 reports {{ aws_nodes_lb_ingress_worker_ids | default([]) | length }} ({{ aws_nodes_lb_ingress_worker_ids | default([]) }}).
+      Re-run: ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json --tags ec2,load_balancers
+  when: aws_nodes_ingress_expected_workers | int > 0
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
+- name: Require instances for ingress target registration
+  ansible.builtin.assert:
+    that:
+      - aws_nodes_lb_ingress_target_ids | default([]) | length > 0
+    fail_msg: >-
+      No worker or master instance IDs to register on ingress target groups for {{ cluster_name }}.
+      When worker_count + gpu_worker_count > 0, run --tags ec2 (or full deploy) to launch workers.
+      For compact clusters (zero workers), set aws_nodes_ingress_register_masters_when_no_workers: true (default)
+      and ensure masters exist, or add workers.
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
+- name: Register instances on each ingress target group (idempotent)
+  ansible.builtin.include_tasks: load_balancers_ingress_targets_loop.yml
+  loop: "{{ aws_nodes_ingress_tg_info.target_groups | default([]) }}"
+  loop_control:
+    loop_var: aws_nodes_ingress_tg_item
+    label: "{{ aws_nodes_ingress_tg_item.target_group_name }}"
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers

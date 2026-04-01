@@ -43,6 +43,12 @@
           {{ csr_approver_install_dir }}/csr-fail/
           {% endif %}
 
+- name: Preflight — EC2 workers exist when worker_count or gpu_worker_count is positive
+  ansible.builtin.include_tasks: expected_workers_ec2_preflight.yml
+  when: not (csr_approver_skip_expected_workers_ec2_preflight | default(false) | bool)
+  tags:
+    - csr_approval
+
 # Fail in seconds when the NLB has no targets (otherwise bastion wait_for burns csr_approver_connectivity_timeout).
 - name: Preflight — API target group has registered targets
   tags:
