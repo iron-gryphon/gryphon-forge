@@ -6,6 +6,11 @@ platform:
   aws:
     region: {{ foundry_region }}
     subnets: {{ foundry_private_subnets }}
+{% set _route53_private_zone = (foundry_internal_hosted_zone_id['value'] if (foundry_internal_hosted_zone_id is mapping and (foundry_internal_hosted_zone_id | default({})).get('value') is defined) else foundry_internal_hosted_zone_id) | default('', true) | trim %}
+{% if _route53_private_zone | length > 0 %}
+    {# Installer emits dnses.config.openshift.io/cluster with spec.privateZone.id; required for UPI + existing private zone. #}
+    hostedZone: {{ _route53_private_zone }}
+{% endif %}
 networking:
   clusterNetwork:
   - cidr: 10.128.0.0/14
