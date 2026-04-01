@@ -265,6 +265,30 @@
     - ec2
     - load_balancers
 
+# Launch facts can list instance IDs while state is still pending; ELB RegisterTargets rejects non-running targets.
+- name: Wait for ingress target EC2 instances to be running
+  amazon.aws.ec2_instance_info:
+    region: "{{ foundry_region }}"
+    instance_ids: "{{ aws_nodes_lb_ingress_target_ids }}"
+  register: aws_nodes_lb_ingress_running_query
+  until: >-
+    (
+      (aws_nodes_lb_ingress_running_query.instances | default([])
+       | selectattr('state.name', 'equalto', 'running') | list | length)
+      == (aws_nodes_lb_ingress_target_ids | length)
+    )
+    and (
+      (aws_nodes_lb_ingress_running_query.instances | default([]) | length)
+      == (aws_nodes_lb_ingress_target_ids | length)
+    )
+  retries: "{{ aws_nodes_lb_target_discovery_retries | int }}"
+  delay: "{{ aws_nodes_lb_target_discovery_delay | int }}"
+  when: aws_nodes_lb_ingress_target_ids | default([]) | length > 0
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
 - name: Register instances on each ingress target group (idempotent)
   ansible.builtin.include_tasks: load_balancers_ingress_targets_loop.yml
   loop: "{{ aws_nodes_ingress_tg_info.target_groups | default([]) }}"
