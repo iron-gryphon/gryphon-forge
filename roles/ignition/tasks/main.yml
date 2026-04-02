@@ -194,6 +194,11 @@
   tags:
     - ignition
 
+- name: Patch manifests (DNS private zone, optional Unmanaged ingress DNS)
+  ansible.builtin.include_tasks: patch_manifests_post_create.yml
+  tags:
+    - ignition
+
 # openshift-install emits per-zone filenames (e.g. master-machines-0.yaml), not the legacy single-file names.
 # See openshift/installer docs/user/aws/install_upi.md — leaving these in breaks Machine API vs UPI and can stall bootstrap (incl. CNI/OVN).
 - name: Find Machine / MachineSet manifests to strip for UPI
@@ -218,12 +223,14 @@
   tags:
     - ignition
 
+# With workers, keep masters unschedulable (installer default for IPI). Compact / three-node clusters need mastersSchedulable: true.
 - name: Find cluster scheduler manifest for UPI patch
   ansible.builtin.find:
     paths: "{{ install_dir }}/manifests"
     patterns: "cluster-scheduler-02-config.y*ml"
     file_type: file
   register: ignition_cluster_scheduler_manifests
+  when: (worker_count | default(0) | int) + (gpu_worker_count | default(0) | int) > 0
   tags:
     - ignition
 
@@ -232,9 +239,10 @@
     path: "{{ item.path }}"
     regexp: '(?m)^(\s*mastersSchedulable:\s*)true\s*$'
     replace: '\1false'
-  loop: "{{ ignition_cluster_scheduler_manifests.files }}"
+  loop: "{{ ignition_cluster_scheduler_manifests.files | default([]) }}"
   loop_control:
     label: "{{ item.path | basename }}"
+  when: (worker_count | default(0) | int) + (gpu_worker_count | default(0) | int) > 0
   tags:
     - ignition
 

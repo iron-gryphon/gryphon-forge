@@ -18,6 +18,8 @@ Wraps `openshift-install` to generate OpenShift ignition configuration files for
 
 After `openshift-install create manifests`, this role removes `openshift/99_openshift-cluster-api_master-machines*.yaml`, `worker-machineset*.yaml`, and `99_openshift-machine-api_master-control-plane-machine-set.yaml` so the Machine API does not fight UPI (matches [OpenShift AWS UPI manifest steps](https://github.com/openshift/installer/blob/master/docs/user/aws/install_upi.md) manifest edits). `install-config` sets `networkType: OVNKubernetes` and default pod/service CIDRs explicitly.
 
+When `foundry_internal_hosted_zone_id` is set, `install-config` includes `platform.aws.hostedZone` so the installer emits `dnses.config.openshift.io/cluster` with `spec.privateZone.id`. The post-create patch (when `ignition_patch_dns_aws_private_zone` is true) updates the same field only—never `spec.platform.aws.privateZone`, which is not part of the OpenShift 4.20+ API and can prevent bootstrap from applying DNS/cluster (MCO then errors on a missing DNS object). Scheduler `mastersSchedulable: false` is applied only when `worker_count + gpu_worker_count > 0` so compact clusters keep the installer default schedulable masters.
+
 ## Prerequisites
 
 - Network access to `forge_ocp_mirror_base_url` / `forge_ocp_mirror_channel` on the controller (Linux or macOS), **or** set `openshift_install_binary_path` and `openshift_client_binary_path` to absolute paths (same OCP z-stream as `ocp_version`)

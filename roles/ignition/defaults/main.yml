@@ -2,6 +2,12 @@
 # Ignition role defaults
 # Optional paths: set openshift_install_binary_path / openshift_client_binary_path in inventory (group_vars/all.yml).
 
+# After create manifests: set spec.platform.aws.privateZone.id to foundry_internal_hosted_zone_id (reuse foundry private zone).
+ignition_patch_dns_aws_private_zone: true
+
+# When true: patch default IngressController so endpointPublishingStrategy.loadBalancer.dnsManagementPolicy is Unmanaged (Forge Route53 owns *.apps).
+ignition_ingress_default_dns_management_unmanaged: false
+
 # Optional JSON (docker config style) with {"auths":{...}} for the private mirror only; merged with pull_secret_path for tag discovery.
 mirror_registry_dockerconfig_extra_path: ""  # noqa: var-naming[no-role-prefix]
 # Registry API scheme for discover-mirror-release-tag.sh (curl /v2/.../tags/list); use http only for plain-HTTP mirrors.

@@ -1,0 +1,56 @@
+---
+# Included with loop_var aws_nodes_ingress_tg_item — register nodes on one ingress target group.
+
+- name: Describe existing targets on ingress TG {{ aws_nodes_ingress_tg_item.target_group_name }}
+  community.aws.elb_target_group_info:
+    names:
+      - "{{ aws_nodes_ingress_tg_item.target_group_name }}"
+    collect_targets_health: true
+    region: "{{ foundry_region }}"
+  register: aws_nodes_ingress_tg_one
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
+- name: Set already-registered instance IDs for {{ aws_nodes_ingress_tg_item.target_group_name }}
+  ansible.builtin.set_fact:
+    aws_nodes_lb_ingress_tg_existing_ids: >-
+      {{
+        (
+          (aws_nodes_ingress_tg_one.target_groups | default([{}]))[0].targets_health_description | default([])
+        )
+        | map(attribute='target')
+        | map(attribute='id')
+        | list
+      }}
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
+- name: Set registration port for {{ aws_nodes_ingress_tg_item.target_group_name }}
+  ansible.builtin.set_fact:
+    aws_nodes_lb_ingress_reg_port: >-
+      {{ ('ingress-443-tg' in aws_nodes_ingress_tg_item.target_group_name) | ternary(443, 80) }}
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
+- name: Register missing instances on {{ aws_nodes_ingress_tg_item.target_group_name }}
+  community.aws.elb_target:
+    target_group_arn: "{{ aws_nodes_ingress_tg_item.target_group_arn }}"
+    target_id: "{{ item }}"
+    target_port: "{{ aws_nodes_lb_ingress_reg_port | int }}"
+    state: present
+    region: "{{ foundry_region }}"
+  loop: >-
+    {{
+      aws_nodes_lb_ingress_target_ids
+      | difference(aws_nodes_lb_ingress_tg_existing_ids | default([]))
+    }}
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers

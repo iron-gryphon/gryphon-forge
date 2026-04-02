@@ -43,6 +43,12 @@
           {{ csr_approver_install_dir }}/csr-fail/
           {% endif %}
 
+- name: Preflight — EC2 workers exist when worker_count or gpu_worker_count is positive
+  ansible.builtin.include_tasks: expected_workers_ec2_preflight.yml
+  when: not (csr_approver_skip_expected_workers_ec2_preflight | default(false) | bool)
+  tags:
+    - csr_approval
+
 # Fail in seconds when the NLB has no targets (otherwise bastion wait_for burns csr_approver_connectivity_timeout).
 - name: Preflight — API target group has registered targets
   tags:
@@ -579,12 +585,15 @@
     dest: "{{ csr_approver_install_dir }}/approve-and-wait.sh"
     content: |
       #!/bin/bash
-      set -e
+      # No global set -e: oc get/adm failures must not exit the loop (UPI workers, transient API errors; issue #20).
+      set -u
       export KUBECONFIG="{{ csr_approver_install_dir }}/auth/kubeconfig"
       INSTALL_DIR="{{ csr_approver_install_dir }}"
       INTERVAL={{ csr_approver_csr_check_interval }}
       OPENSHIFT_INSTALL="{{ csr_approver_openshift_install_cmd }}"
       OC_CMD="{{ csr_approver_oc_cmd }}"
+      # Pending CSRs: match Red Hat UPI pattern (CSRs with no .status), not jsonpath status.conditions==null.
+      CSR_PENDING_TEMPLATE='{% raw %}{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}{% endraw %}'
 
       # Run install-complete in background; while waiting, approve CSRs
       (
@@ -592,14 +601,21 @@
       ) &
       WAIT_PID=$!
 
-      while kill -0 $WAIT_PID 2>/dev/null; do
-        for csr in $($OC_CMD get csr -o jsonpath='{.items[?(@.status.conditions==null)].metadata.name}' 2>/dev/null); do
-          $OC_CMD adm certificate approve "$csr" 2>/dev/null && echo "Approved $csr"
-        done
-        sleep $INTERVAL
+      while kill -0 "$WAIT_PID" 2>/dev/null; do
+        pending="$($OC_CMD get csr -o go-template="$CSR_PENDING_TEMPLATE" 2>/dev/null || true)"
+        if [ -n "${pending:-}" ]; then
+          while IFS= read -r csr; do
+            [ -z "$csr" ] && continue
+            if $OC_CMD adm certificate approve "$csr" 2>/dev/null; then
+              echo "Approved $csr"
+            fi
+          done <<< "$pending"
+        fi
+        sleep "$INTERVAL"
       done
 
-      wait $WAIT_PID
+      wait "$WAIT_PID"
+      exit $?
     mode: "0755"
   tags:
     - csr_approval
