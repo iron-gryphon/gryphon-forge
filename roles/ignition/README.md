@@ -20,6 +20,20 @@ After `openshift-install create manifests`, this role removes `openshift/99_open
 
 When `foundry_internal_hosted_zone_id` is set, `install-config` includes `platform.aws.hostedZone` so the installer emits `dnses.config.openshift.io/cluster` with `spec.privateZone.id`. The post-create patch (when `ignition_patch_dns_aws_private_zone` is true) updates the same field only—never `spec.platform.aws.privateZone`, which is not part of the OpenShift 4.20+ API and can prevent bootstrap from applying DNS/cluster (MCO then errors on a missing DNS object). Scheduler `mastersSchedulable: false` is applied only when `worker_count + gpu_worker_count > 0` so compact clusters keep the installer default schedulable masters.
 
+### IngressController post-create patch (Forge NLB vs ALB)
+
+Forge can expose the default router with an **internal NLB** whose target groups health-check **TCP 80 and 443 on the worker instances**. The installer default `endpointPublishingStrategy` for AWS often uses a **LoadBalancerService**-style publishing path where the router does **not** listen on the node’s host **:443** the way those NLB checks expect, so targets stay unhealthy and cluster operators that reach `*.apps` on **:443** see **connection refused**.
+
+After `openshift-install create manifests`, this role can patch `IngressController/default`:
+
+| Variable | Effect |
+|----------|--------|
+| `ignition_ingress_endpoint_publishing_hostnetwork` | When **true** and **`foundry_ingress_certificate_arn` is empty** (NLB path, no ACM/ALB), set `spec.endpointPublishingStrategy` to **`type: HostNetwork`** with `hostNetwork.httpPort` / `hostNetwork.httpsPort` (defaults **80** / **443**) so the router binds on the same ports the Forge NLB targets. **Disabled automatically** when an ACM cert ARN is set so the ALB/HTTPS path is unchanged. |
+| `ignition_ingress_hostnetwork_http_port` / `ignition_ingress_hostnetwork_https_port` | Override host ports when using HostNetwork (defaults match the CRD and Forge NLB target groups). |
+| `ignition_ingress_default_dns_management_unmanaged` | When **true**, merge `loadBalancer.dnsManagementPolicy: Unmanaged` into the existing strategy—used on the **ALB** path (or if HostNetwork is off) so OpenShift does not fight Forge-owned **\*.apps** Route53 records. |
+
+Only `spec.endpointPublishingStrategy` is replaced or merged; the rest of `spec` is preserved. Re-running the patch is idempotent for a given variable set.
+
 ## Prerequisites
 
 - Network access to `forge_ocp_mirror_base_url` / `forge_ocp_mirror_channel` on the controller (Linux or macOS), **or** set `openshift_install_binary_path` and `openshift_client_binary_path` to absolute paths (same OCP z-stream as `ocp_version`)
