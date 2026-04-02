@@ -108,6 +108,32 @@
   tags:
     - ignition
 
+- name: Find YAML manifests under manifests/ for default IngressController (installer layout fallback)
+  ansible.builtin.find:
+    paths: "{{ install_dir }}/manifests"
+    patterns:
+      - "*.yml"
+      - "*.yaml"
+    file_type: file
+  register: ignition_cluster_manifest_find
+  when: ignition_ingresscontroller_manifest_path is not defined
+  tags:
+    - ignition
+
+- name: Resolve path to default IngressController manifest under manifests/
+  ansible.builtin.set_fact:
+    ignition_ingresscontroller_manifest_path: "{{ item.path }}"
+  loop: "{{ (ignition_cluster_manifest_find | default({})).files | default([]) }}"
+  vars:
+    ignition_ingress_manifest_doc: "{{ lookup('file', item.path) | from_yaml }}"
+  when:
+    - ignition_ingresscontroller_manifest_path is not defined
+    - (ignition_cluster_manifest_find | default({})).files | default([]) | length > 0
+    - (ignition_ingress_manifest_doc.kind | default('')) == 'IngressController'
+    - ((ignition_ingress_manifest_doc.metadata | default({})).name | default('')) == 'default'
+  tags:
+    - ignition
+
 - name: Merge Unmanaged DNS policy into default IngressController manifest
   when:
     - ignition_ingress_default_dns_management_unmanaged | bool

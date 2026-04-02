@@ -89,7 +89,7 @@ ingress_dns_name: "*.apps.{{ cluster_name }}.{{ base_domain }}"
 # Set DNS operator privateZone.id to foundry_internal_hosted_zone_id when reusing the foundry private zone (AWS private / UPI).
 ignition_patch_dns_aws_private_zone: true
 # When true: default IngressController uses Unmanaged LB DNS so Forge-owned Route53 records for *.apps are authoritative (OCP 4.15+).
-ignition_ingress_default_dns_management_unmanaged: false
+ignition_ingress_default_dns_management_unmanaged: true
 
 # --- Disconnected Install (mirror registry) ---
 # When set, install-config gets imageDigestSources (default) and an ImageDigestMirrorSet manifest—matching

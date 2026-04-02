@@ -4,6 +4,8 @@
 # ec2_control_plane.yml also uses foundry_vault_api_security_group_id / foundry_vault_security_group_id on bootstrap/master ENIs when present
 # in foundry_output.json so ENIs match gryphon-foundry Terraform (API/MCS/etcd on vault_api; broad VPC on vault).
 # API/MCS (6443, 22623) must allow from Vault VPC CIDR for NLB health checks (NLB has no SG).
+# Ingress NLB registers targets on TCP 80/443 (router default/hostNetwork); worker (and compact master) SGs must allow
+# those ports from the Vault VPC CIDR so health checks succeed.
 # Bootstrap etcd (2379 client, 2380 peer) must allow ingress from the Vault VPC (and from the master SG)
 # so control-plane nodes can join the bootstrap etcd before the static pods migrate to in-cluster etcd.
 # Bootstrap and master SGs use foundry_vault_vpc_cidr for control-plane ports (not only 10.0.0.0/8).
@@ -239,6 +241,27 @@
           [
             {
               'proto': 'tcp',
+              'from_port': 80,
+              'to_port': 80,
+              'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+              'rule_desc': 'Ingress NLB / router hostNetwork from Vault VPC'
+            },
+            {
+              'proto': 'tcp',
+              'from_port': 443,
+              'to_port': 443,
+              'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+              'rule_desc': 'Ingress NLB / router hostNetwork from Vault VPC'
+            },
+          ]
+          if (aws_nodes_ingress_register_masters_when_no_workers | bool)
+            and (((worker_count | default(0) | int) + (gpu_worker_count | default(0) | int)) == 0)
+          else []
+        )
+        + (
+          [
+            {
+              'proto': 'tcp',
               'from_port': 22,
               'to_port': 22,
               'group_id': foundry_bastion_security_group_id,
@@ -328,6 +351,20 @@
             'to_port': 22,
             'cidr_ip': '192.168.0.0/16',
             'rule_desc': 'SSH from 192.168.0.0/16 (Nest or admin in RFC1918)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 80,
+            'to_port': 80,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'Ingress NLB / router hostNetwork from Vault VPC'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 443,
+            'to_port': 443,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'Ingress NLB / router hostNetwork from Vault VPC'
           },
           {
             'proto': 'tcp',
