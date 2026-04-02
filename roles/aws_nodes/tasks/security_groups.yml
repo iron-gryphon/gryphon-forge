@@ -11,6 +11,7 @@
 # SSH to RHCOS bootstrap: user core, key from install (same as ec2_key_name). Allow Nest CIDR + bastion SG
 # so ssh from the foundry bastion over peering matches API/MCS (not only hardcoded 10.0.0.0/8).
 # Master SSH uses the same Nest / bastion SG / RFC1918 sources as bootstrap so the bastion can reach :22 on control plane nodes.
+# Worker SSH uses the same sources so the bastion can reach :22 on workers (Nest CIDR / bastion SG when applicable).
 #
 # Prefer the live VPC IPv4 CIDR from EC2 (authoritative). A stale/wrong foundry_vault_vpc_cidr breaks
 # NLB health checks (all targets unhealthy) while SSH may still work via 10.0.0.0/8 or Nest rules.
@@ -297,22 +298,79 @@
     description: "Worker nodes for {{ cluster_name }}"
     vpc_id: "{{ foundry_vpc_id }}"
     state: present
-    rules:
-      - proto: tcp
-        from_port: 22
-        to_port: 22
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "SSH from VPC"
-      - proto: tcp
-        from_port: 10250
-        to_port: 10250
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "Kubelet"
-      - proto: tcp
-        from_port: 30000
-        to_port: 32767
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "NodePort services"
+    rules: >-
+      {{
+        [
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'SSH from Vault VPC'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': '10.0.0.0/8',
+            'rule_desc': 'SSH from 10.0.0.0/8 (VPN or legacy Nest in 10/8)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': '172.16.0.0/12',
+            'rule_desc': 'SSH from 172.16.0.0/12 (Nest or admin in RFC1918)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': '192.168.0.0/16',
+            'rule_desc': 'SSH from 192.168.0.0/16 (Nest or admin in RFC1918)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 10250,
+            'to_port': 10250,
+            'cidr_ip': '10.0.0.0/8',
+            'rule_desc': 'Kubelet'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 30000,
+            'to_port': 32767,
+            'cidr_ip': '10.0.0.0/8',
+            'rule_desc': 'NodePort services'
+          },
+        ]
+        + (
+          [
+            {
+              'proto': 'tcp',
+              'from_port': 22,
+              'to_port': 22,
+              'group_id': foundry_bastion_security_group_id,
+              'rule_desc': 'SSH from bastion security group'
+            },
+          ]
+          if foundry_bastion_security_group_id | default('') | length > 0
+          else []
+        )
+        + (
+          [
+            {
+              'proto': 'tcp',
+              'from_port': 22,
+              'to_port': 22,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'SSH from Nest (bastion via peering)'
+            },
+          ]
+          if foundry_nest_vpc_cidr | default('') | length > 0
+          else []
+        )
+      }}
     tags:
       Name: "{{ cluster_name }}-worker-sg"
       cluster: "{{ cluster_name }}"
