@@ -1,3 +1,10 @@
+{# hostedZone: keep Jinja out of the platform.aws mapping body — mid-block tags broke openshift-install YAML parse (line 8: did not find expected key). #}
+{% set _fihz = foundry_internal_hosted_zone_id | default(none) %}
+{% set _route53_private_zone = (
+  (_fihz['value'] | string | trim)
+  if (_fihz is mapping and _fihz.get('value', '') | string | trim | length > 0)
+  else ((_fihz | string | trim) if (_fihz is string) else '')
+) %}
 apiVersion: v1
 baseDomain: {{ base_domain }}
 metadata:
@@ -6,6 +13,9 @@ platform:
   aws:
     region: {{ foundry_region }}
     subnets: {{ foundry_private_subnets }}
+{% if _route53_private_zone | length > 0 %}
+    hostedZone: "{{ _route53_private_zone }}"
+{% endif %}
 networking:
   clusterNetwork:
   - cidr: 10.128.0.0/14

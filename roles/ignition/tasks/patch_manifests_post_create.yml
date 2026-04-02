@@ -18,10 +18,8 @@
   ansible.builtin.find:
     paths: "{{ install_dir }}/manifests"
     patterns:
-      - "cluster-dns-02-config.yaml"
-      - "cluster-dns-02-config.yml"
-      - "cluster-dns-default.yaml"
-      - "cluster-dns-default.yml"
+      - "cluster-dns*.yaml"
+      - "cluster-dns*.yml"
     file_type: file
   register: ignition_dns_manifest_find
   tags:
@@ -57,20 +55,11 @@
       ansible.builtin.set_fact:
         ignition_dns_doc_in: "{{ ignition_dns_manifest_slurp.content | b64decode | from_yaml }}"
 
-    - name: Merge spec.platform.aws.privateZone.id (preserve other keys)
+    # config.openshift.io DNS: private zone ID belongs in spec.privateZone (AWSDNSSpec has no privateZone field in 4.20+).
+    # Writing spec.platform.aws.privateZone produced invalid YAML and bootstrap could skip applying DNS/cluster, breaking MCO.
+    - name: Merge spec.privateZone.id for foundry Route53 zone (replace privateZone; preserve baseDomain, publicZone, platform)
       ansible.builtin.set_fact:
-        ignition_dns_spec_new: >-
-          {{
-            ignition_dns_doc_in.spec | default({})
-            | combine({'platform': ignition_dns_plat_new}, recursive=true)
-          }}
-      vars:
-        ignition_dns_plat_in: "{{ (ignition_dns_doc_in.spec | default({})).platform | default({}) }}"
-        ignition_dns_aws_in: "{{ ignition_dns_plat_in.aws | default({}) }}"
-        ignition_dns_pz_in: "{{ ignition_dns_aws_in.privateZone | default({}) }}"
-        ignition_dns_pz_new: "{{ ignition_dns_pz_in | combine({'id': ignition_forge_private_zone_id}, recursive=true) }}"
-        ignition_dns_aws_new: "{{ ignition_dns_aws_in | combine({'privateZone': ignition_dns_pz_new}, recursive=true) }}"
-        ignition_dns_plat_new: "{{ ignition_dns_plat_in | combine({'aws': ignition_dns_aws_new}, recursive=true) }}"
+        ignition_dns_spec_new: "{{ ignition_dns_doc_in.spec | default({}) | combine({'privateZone': {'id': ignition_forge_private_zone_id}}) }}"
 
     - name: Build full patched DNS document
       ansible.builtin.set_fact:
@@ -86,7 +75,7 @@
   ansible.builtin.fail:
     msg: >-
       ignition_patch_dns_aws_private_zone is true and foundry_internal_hosted_zone_id is set, but no DNS/cluster manifest
-      was found under {{ install_dir }}/manifests (expected cluster-dns-02-config or similar). Re-run openshift-install
+      was found under {{ install_dir }}/manifests (expected cluster-dns-02-config.yml or cluster-dns*.y*ml). Re-run openshift-install
       create manifests or check install_dir.
   when:
     - ignition_patch_dns_aws_private_zone | bool
