@@ -1,0 +1,50 @@
+---
+# GH-23: Route spec.port.targetPort must name/number a Service port (https / 443), not the pod targetPort 6443.
+
+- name: Skip oauth route report section when check disabled
+  ansible.builtin.set_fact:
+    validation_oauth_route_report_section: "(check disabled via validation_check_oauth_openshift_route)"
+  when: not (validation_check_oauth_openshift_route | default(true) | bool)
+
+- name: Query oauth-openshift Route targetPort
+  when: validation_check_oauth_openshift_route | default(true) | bool
+  block:
+    - name: Get oauth-openshift Route targetPort
+      ansible.builtin.command:
+        cmd: >-
+          {{ validation_oc_cmd }} get route oauth-openshift -n openshift-authentication
+          --kubeconfig={{ validation_install_dir }}/auth/kubeconfig
+          -o jsonpath='{.spec.port.targetPort}'
+      register: validation_oauth_route_tp
+      changed_when: false
+      failed_when: false
+
+    - name: Set oauth route report section from query
+      ansible.builtin.set_fact:
+        validation_oauth_route_report_section: "{{ _oauth_route_report }}"
+      vars:
+        _oauth_tp: "{{ validation_oauth_route_tp.stdout | default('', true) | trim }}"
+        _oauth_rc: "{{ validation_oauth_route_tp.rc | default(-1) }}"
+        _oauth_route_report: >-
+          {% if _oauth_rc | int != 0 %}
+          rc={{ _oauth_rc }} (route missing or API error)
+          {% elif _oauth_tp | length == 0 %}
+          targetPort=(empty) rc=0
+          {% elif _oauth_tp == '6443' %}
+          targetPort=6443 rc=0 WARNING: Route must reference Service port https or 443, not pod targetPort 6443 (see AGENTS.md, GH-23)
+          {% else %}
+          targetPort={{ _oauth_tp }} rc=0 OK
+          {% endif %}
+
+- name: Warn when oauth-openshift Route targetPort is 6443 (GH-23)
+  ansible.builtin.debug:
+    msg: >-
+      oauth-openshift Route spec.port.targetPort is 6443; it must reference the oauth-openshift Service port
+      (name https or number 443), not the pod targetPort. Console and OAuth can break through the default ingress.
+      See AGENTS.md (Troubleshooting). The csr_approver role can auto-patch during install-complete when
+      csr_approver_repair_oauth_openshift_route is true.
+  when:
+    - validation_check_oauth_openshift_route | default(true) | bool
+    - validation_oauth_route_tp is defined
+    - validation_oauth_route_tp.rc | default(1) == 0
+    - (validation_oauth_route_tp.stdout | default('', true) | trim) == '6443'

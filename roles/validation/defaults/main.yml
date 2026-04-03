@@ -11,3 +11,5 @@ validation_controller_install_dir: "{{ install_dir }}"
 validation_report_filename: validation-report.txt
 # After validation, pull kubeconfig and kubeadmin-password from bastion to the controller copy of install_dir
 validation_sync_auth_to_controller: true
+# GH-23: warn in report / debug when Route targetPort is wrong (non-fatal)
+validation_check_oauth_openshift_route: true

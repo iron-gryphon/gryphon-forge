@@ -71,6 +71,12 @@
   tags:
     - validation
 
+- name: Check oauth-openshift Route vs Service ports (GH-23)
+  ansible.builtin.include_tasks: oauth_openshift_route.yml
+  when: validation_oc_whoami.rc | default(1) == 0
+  tags:
+    - validation
+
 - name: Write validation report file
   ansible.builtin.copy:
     dest: "{{ validation_install_dir }}/{{ validation_report_filename }}"
@@ -101,6 +107,9 @@
       {% if validation_cluster_version.stderr | default('') | length > 0 %}
       stderr: {{ validation_cluster_version.stderr }}
       {% endif %}
+
+      --- oauth-openshift Route (openshift-authentication) ---
+      {{ validation_oauth_route_report_section | default('(not checked)') }}
   tags:
     - validation
 

@@ -21,6 +21,7 @@ Watches for pending Certificate Signing Requests (CSRs) from Kubelet during Open
 | `csr_approver_bootstrap_etcd_tcp_preflight` | Before `wait-for bootstrap-complete`, SSH to first master as `core` and open TCP to bootstrap private IP **2379** and **2380** (retries; set `false` to skip) | true |
 | `csr_approver_etcd_tcp_preflight_retries` | Attempts for the master→bootstrap etcd TCP preflight | 36 |
 | `csr_approver_etcd_tcp_preflight_delay` | Seconds between preflight attempts | 10 |
+| `csr_approver_repair_oauth_openshift_route` | During `install-complete`, patch `oauth-openshift` Route if `targetPort` is wrongly `6443` (must be Service port `https`; [issue #23](https://github.com/iron-gryphon/gryphon-forge/issues/23)) | true |
 
 ## Connectivity validation
 

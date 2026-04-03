@@ -108,6 +108,26 @@ ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json
 
 Variables are overridden in the first play of `deploy_cluster.yml` from: 1) `include_vars` (if file at `foundry_output_path` exists), 2) `-e @foundry_output.json`, 3) `all.yml` defaults.
 
+## Troubleshooting: OAuth, console, and `install-complete`
+
+On some UPI installs, `openshift-install wait-for install-complete` appears to stall while the console or authentication never becomes healthy. One cause is a misconfigured **Route** for OAuth: the `oauth-openshift` **Service** in `openshift-authentication` publishes port **443** (name **`https`**) and maps it to **pod** port **6443**. The Route’s `spec.port.targetPort` must reference the **Service** port (name `https` or number `443`), **not** `6443`. If `targetPort` is `6443`, it does not match any `Service.spec.ports[].port`, which can break passthrough routing through the default ingress controller.
+
+**Check**
+
+```bash
+oc get svc oauth-openshift -n openshift-authentication -o wide
+oc get route oauth-openshift -n openshift-authentication -o jsonpath='{.spec.port.targetPort}{"\n"}'
+```
+
+**Repair** (idempotent when the Route exists and is wrong)
+
+```bash
+oc patch route oauth-openshift -n openshift-authentication --type=json \
+  -p='[{"op":"replace","path":"/spec/port/targetPort","value":"https"}]'
+```
+
+The **csr_approver** role runs this patch periodically during `approve-and-wait.sh` while `install-complete` is in progress when `csr_approver_repair_oauth_openshift_route` is `true` (default). The **validation** role records Route `targetPort` in `validation-report.txt` and emits a debug warning if it is still `6443`. If a bad value returns after the operator reconciles, capture `oc get route oauth-openshift -n openshift-authentication -o yaml` and authentication operator logs; root cause may be upstream for some releases. See [issue #23](https://github.com/iron-gryphon/gryphon-forge/issues/23).
+
 ## Common Tasks
 
 - **Add a new role:** Create `roles/<name>/` with `tasks/main.yml`, `defaults/main.yml`, `README.md`.
