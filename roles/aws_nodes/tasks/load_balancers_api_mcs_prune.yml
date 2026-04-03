@@ -1,0 +1,84 @@
+---
+# Remove stale or invalid instances from API (6443) and MCS (22623) NLB target groups.
+# Never deregisters EC2 with tag cluster=<cluster_name> and role=master (control plane).
+# Confirm unknown instances with the operator (aws ec2 describe-instances --instance-ids …); pass IDs in
+# aws_nodes_lb_api_mcs_prune_extra_instance_ids after verification.
+
+- name: Refresh API target group attachments for prune decision
+  community.aws.elb_target_group_info:
+    names:
+      - "{{ cluster_name }}-api-tg"
+    collect_targets_health: true
+    region: "{{ foundry_region }}"
+  register: aws_nodes_lb_prune_api_tg
+
+- name: Refresh MCS target group attachments for prune decision
+  community.aws.elb_target_group_info:
+    names:
+      - "{{ cluster_name }}-mcs-tg"
+    collect_targets_health: true
+    region: "{{ foundry_region }}"
+  register: aws_nodes_lb_prune_mcs_tg
+
+- name: Union instance IDs registered on API or MCS target groups
+  ansible.builtin.set_fact:
+    aws_nodes_lb_api_mcs_registered_ids: >-
+      {{
+        (
+          (
+            (aws_nodes_lb_prune_api_tg.target_groups | default([{}]))[0].targets_health_description | default([])
+            | map(attribute='target')
+            | map(attribute='id')
+            | list
+          )
+          + (
+            (aws_nodes_lb_prune_mcs_tg.target_groups | default([{}]))[0].targets_health_description | default([])
+            | map(attribute='target')
+            | map(attribute='id')
+            | list
+          )
+        ) | unique | list
+      }}
+
+- name: Evaluate and deregister invalid API/MCS targets
+  when: aws_nodes_lb_api_mcs_registered_ids | default([]) | length > 0
+  block:
+    - name: Describe EC2 for all API/MCS registered targets
+      amazon.aws.ec2_instance_info:
+        instance_ids: "{{ aws_nodes_lb_api_mcs_registered_ids }}"
+        region: "{{ foundry_region }}"
+      register: aws_nodes_lb_prune_ec2_describe
+
+    - name: Reset deregister accumulator before per-target evaluation
+      ansible.builtin.set_fact:
+        aws_nodes_lb_api_mcs_ids_to_deregister: []
+
+    - name: Evaluate each registered target for API/MCS deregistration
+      ansible.builtin.include_tasks: load_balancers_api_mcs_prune_eval.yml
+      loop: "{{ aws_nodes_lb_api_mcs_registered_ids }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Deregister stale targets from API target group (6443)
+      community.aws.elb_target:
+        target_group_arn: "{{ aws_nodes_api_tg.target_group_arn }}"
+        target_id: "{{ item }}"
+        target_port: 6443
+        state: absent
+        region: "{{ foundry_region }}"
+      loop: "{{ aws_nodes_lb_api_mcs_ids_to_deregister | default([]) | unique }}"
+      loop_control:
+        label: "{{ item }}"
+      when: (aws_nodes_lb_api_mcs_ids_to_deregister | default([]) | length) > 0
+
+    - name: Deregister stale targets from MCS target group (22623)
+      community.aws.elb_target:
+        target_group_arn: "{{ aws_nodes_mcs_tg.target_group_arn }}"
+        target_id: "{{ item }}"
+        target_port: 22623
+        state: absent
+        region: "{{ foundry_region }}"
+      loop: "{{ aws_nodes_lb_api_mcs_ids_to_deregister | default([]) | unique }}"
+      loop_control:
+        label: "{{ item }}"
+      when: (aws_nodes_lb_api_mcs_ids_to_deregister | default([]) | length) > 0

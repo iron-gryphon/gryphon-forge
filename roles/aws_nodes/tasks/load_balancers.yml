@@ -371,4 +371,20 @@
     - aws_nodes
     - load_balancers
 
+- name: Prune invalid API/MCS NLB targets (workers, foreign cluster, operator-confirmed IDs; never masters)
+  ansible.builtin.include_tasks: load_balancers_api_mcs_prune.yml
+  when:
+    - aws_nodes_lb_prune_api_mcs_targets_enabled | default(true) | bool
+    - >-
+      (
+        (aws_nodes_lb_prune_api_mcs_worker_targets | default(true) | bool)
+        or (aws_nodes_lb_api_mcs_deregister_bootstrap | default(false) | bool)
+        or ((aws_nodes_lb_api_mcs_prune_extra_instance_ids | default([])) | length > 0)
+        or (aws_nodes_lb_api_mcs_prune_stale_non_master_targets | default(true) | bool)
+        or (aws_nodes_lb_prune_api_mcs_foreign_cluster_targets | default(true) | bool)
+      )
+  tags:
+    - aws_nodes
+    - load_balancers
+
 # NLB/TG validation runs from main.yml after route53.yml so api-int exists before bastion DNS probes.

@@ -619,12 +619,26 @@
           done <<< "$pending"
         fi
         # GH-23: Route must target Service port (https/443), not pod targetPort 6443 — fixes OAuth/console via ingress.
+        # If targetPort reverts after a patch, log once per run to install_dir (GH-24 / TLS EOF follow-up).
         if [ "${REPAIR_OAUTH_ROUTE}" = "true" ]; then
           _oauth_tp="$($OC_CMD get route oauth-openshift -n openshift-authentication -o jsonpath='{.spec.port.targetPort}' 2>/dev/null || true)"
           if [ "${_oauth_tp}" = "6443" ]; then
+            if [ -f "$INSTALL_DIR/.gryphon-oauth-route-patched" ]; then
+              _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date 2>/dev/null || echo unknown)"
+              echo "gryphon-forge: WARNING oauth-openshift Route targetPort is 6443 again after a prior patch" \
+                "(issue #23). Operator reconciliation may be fighting the fix; capture route YAML and auth operator logs." \
+                "See issue #24 for TLS/router EOF once targetPort is https or 443."
+              if [ ! -f "$INSTALL_DIR/.gryphon-oauth-route-revert-logged" ]; then
+                echo "${_ts} oauth-openshift spec.port.targetPort reverted to 6443 after patch" >> "$INSTALL_DIR/.gryphon-oauth-route-revert.log"
+                : > "$INSTALL_DIR/.gryphon-oauth-route-revert-logged"
+              fi
+            fi
             echo "gryphon-forge: patching oauth-openshift Route targetPort 6443 -> https (Service port name)"
             $OC_CMD patch route oauth-openshift -n openshift-authentication --type=json \
               -p='[{"op":"replace","path":"/spec/port/targetPort","value":"https"}]' 2>/dev/null || true
+            : > "$INSTALL_DIR/.gryphon-oauth-route-patched"
+          elif [ "${_oauth_tp}" = "https" ] || [ "${_oauth_tp}" = "443" ]; then
+            rm -f "$INSTALL_DIR/.gryphon-oauth-route-patched" "$INSTALL_DIR/.gryphon-oauth-route-revert-logged" 2>/dev/null || true
           fi
         fi
         sleep "$INTERVAL"
