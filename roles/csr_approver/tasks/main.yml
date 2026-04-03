@@ -226,7 +226,13 @@
       ansible.builtin.set_fact:
         csr_approver_gather_dest: "{{
           csr_approver_gather_failure_dest
-          | default(playbook_dir ~ '/bootstrap-failure-logs/' ~ cluster_name ~ '-' ~ (lookup('pipe', 'date +%s') | trim))
+          | default(
+              (install_dir | expanduser)
+              ~ '/bootstrap-failure-logs/'
+              ~ cluster_name
+              ~ '-'
+              ~ (lookup('pipe', 'date +%s') | trim)
+            )
         }}"
       tags:
         - csr_approval

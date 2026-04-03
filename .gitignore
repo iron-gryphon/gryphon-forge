@@ -7,9 +7,6 @@ local_vars.yml
 # OpenShift installer outputs - contains pull secrets, kubeconfig, ignition configs
 installer/
 
-# Bootstrap failure logs gathered from bastion for review
-bootstrap-failure-logs/
-
 # Ansible
 *.retry
 .ansible/
