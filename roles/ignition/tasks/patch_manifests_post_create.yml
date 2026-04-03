@@ -1,6 +1,6 @@
 ---
 # After openshift-install create manifests — align DNS operator with foundry private zone (AWS UPI / private clusters).
-# Optionally set default IngressController loadBalancer.dnsManagementPolicy to Unmanaged when Forge owns *.apps in Route53.
+# Optionally patch default IngressController: Unmanaged DNS on LoadBalancer strategy, and/or HostNetwork publishing when Forge uses an NLB (no ACM/ALB).
 
 - name: Resolve Route53 private hosted zone ID for manifest patches (unwrap Terraform output shape)
   ansible.builtin.set_fact:
@@ -108,10 +108,49 @@
   tags:
     - ignition
 
-- name: Merge Unmanaged DNS policy into default IngressController manifest
+- name: Find YAML manifests under manifests/ for default IngressController (installer layout fallback)
+  ansible.builtin.find:
+    paths: "{{ install_dir }}/manifests"
+    patterns:
+      - "*.yml"
+      - "*.yaml"
+    file_type: file
+  register: ignition_cluster_manifest_find
+  when: ignition_ingresscontroller_manifest_path is not defined
+  tags:
+    - ignition
+
+- name: Resolve path to default IngressController manifest under manifests/
+  ansible.builtin.set_fact:
+    ignition_ingresscontroller_manifest_path: "{{ item.path }}"
+  loop: "{{ (ignition_cluster_manifest_find | default({})).files | default([]) }}"
+  vars:
+    ignition_ingress_manifest_doc: "{{ lookup('file', item.path) | from_yaml }}"
   when:
-    - ignition_ingress_default_dns_management_unmanaged | bool
+    - ignition_ingresscontroller_manifest_path is not defined
+    - (ignition_cluster_manifest_find | default({})).files | default([]) | length > 0
+    - (ignition_ingress_manifest_doc.kind | default('')) == 'IngressController'
+    - ((ignition_ingress_manifest_doc.metadata | default({})).name | default('')) == 'default'
+  tags:
+    - ignition
+
+- name: Set flag when IngressController post-create patch is requested
+  ansible.builtin.set_fact:
+    ignition_ingress_patch_requested: >-
+      {{
+        (ignition_ingress_default_dns_management_unmanaged | bool)
+        or (
+          (ignition_ingress_endpoint_publishing_hostnetwork | bool)
+          and (foundry_ingress_certificate_arn | default('') | length == 0)
+        )
+      }}
+  tags:
+    - ignition
+
+- name: Patch default IngressController manifest (HostNetwork for Forge NLB and/or Unmanaged DNS)
+  when:
     - ignition_ingresscontroller_manifest_path is defined
+    - ignition_ingress_patch_requested | bool
   tags:
     - ignition
   block:
@@ -124,18 +163,33 @@
       ansible.builtin.set_fact:
         ignition_ingress_ic_in: "{{ ignition_ingress_ic_slurp.content | b64decode | from_yaml }}"
 
-    - name: Merge endpointPublishingStrategy.loadBalancer.dnsManagementPolicy
+    - name: Build endpointPublishingStrategy (HostNetwork when NLB path, else merge Unmanaged into existing LoadBalancer strategy)
+      ansible.builtin.set_fact:
+        ignition_ingress_eps_new: "{{ _strategy }}"
+      vars:
+        ignition_ingress_eps_in: "{{ (ignition_ingress_ic_in.spec | default({})).endpointPublishingStrategy | default({}) }}"
+        ignition_ingress_lb_in: "{{ ignition_ingress_eps_in.loadBalancer | default({}) }}"
+        ignition_ingress_lb_new: "{{ ignition_ingress_lb_in | combine({'dnsManagementPolicy': 'Unmanaged'}, recursive=true) }}"
+        ignition_ingress_nlb_hostnetwork: >-
+          {{
+            (ignition_ingress_endpoint_publishing_hostnetwork | bool)
+            and (foundry_ingress_certificate_arn | default('') | length == 0)
+          }}
+        _eps_hostnet:
+          type: HostNetwork
+          hostNetwork:
+            httpPort: "{{ ignition_ingress_hostnetwork_http_port | int }}"
+            httpsPort: "{{ ignition_ingress_hostnetwork_https_port | int }}"
+        _eps_unmanaged_lb: "{{ ignition_ingress_eps_in | combine({'loadBalancer': ignition_ingress_lb_new}, recursive=true) }}"
+        _strategy: "{{ _eps_hostnet if ignition_ingress_nlb_hostnetwork else _eps_unmanaged_lb }}"
+
+    - name: Merge endpointPublishingStrategy into IngressController spec
       ansible.builtin.set_fact:
         ignition_ingress_ic_spec_new: >-
           {{
             ignition_ingress_ic_in.spec | default({})
             | combine({'endpointPublishingStrategy': ignition_ingress_eps_new}, recursive=true)
           }}
-      vars:
-        ignition_ingress_eps_in: "{{ (ignition_ingress_ic_in.spec | default({})).endpointPublishingStrategy | default({}) }}"
-        ignition_ingress_lb_in: "{{ ignition_ingress_eps_in.loadBalancer | default({}) }}"
-        ignition_ingress_lb_new: "{{ ignition_ingress_lb_in | combine({'dnsManagementPolicy': 'Unmanaged'}, recursive=true) }}"
-        ignition_ingress_eps_new: "{{ ignition_ingress_eps_in | combine({'loadBalancer': ignition_ingress_lb_new}, recursive=true) }}"
 
     - name: Build full patched IngressController document
       ansible.builtin.set_fact:
@@ -147,13 +201,13 @@
         content: "{{ ignition_ingress_ic_patched | to_nice_yaml(indent=2) }}\n"
         mode: "0644"
 
-- name: Warn when Unmanaged ingress DNS is requested but default IngressController manifest was not found
+- name: Warn when IngressController patch is requested but default manifest was not found
   ansible.builtin.debug:
     msg: >-
-      ignition_ingress_default_dns_management_unmanaged is true but no IngressController/default manifest was found
-      under {{ install_dir }}/openshift — skipping patch (installer layout may differ for this version).
+      An IngressController patch was requested (Unmanaged DNS and/or HostNetwork for Forge NLB) but no IngressController/default manifest was found
+      under {{ install_dir }}/openshift or {{ install_dir }}/manifests — skipping patch (installer layout may differ for this version).
   when:
-    - ignition_ingress_default_dns_management_unmanaged | bool
     - ignition_ingresscontroller_manifest_path is not defined
+    - ignition_ingress_patch_requested | bool
   tags:
     - ignition
