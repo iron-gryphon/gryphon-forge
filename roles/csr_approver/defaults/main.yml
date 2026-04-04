@@ -36,3 +36,13 @@ csr_approver_etcd_tcp_preflight_retries: 36
 csr_approver_etcd_tcp_preflight_delay: 10
 # GH-23: while wait-for install-complete runs, patch Route if targetPort incorrectly uses pod port 6443
 csr_approver_repair_oauth_openshift_route: true
+# Max oc patch invocations per approve-and-wait.sh run (exponential backoff between patches when wrong).
+csr_approver_repair_oauth_openshift_route_max_attempts: 40
+# After this many post-revert re-patches, fail fast (operator keeps reconciling to 6443).
+csr_approver_repair_oauth_openshift_route_max_reverts: 12
+# Minimum seconds between repeated WARNING lines to stdout when targetPort stays 6443 after a patch.
+csr_approver_repair_oauth_openshift_route_warn_interval_seconds: 300
+csr_approver_repair_oauth_openshift_route_backoff_initial_seconds: 30
+csr_approver_repair_oauth_openshift_route_backoff_max_seconds: 600
+# When non-empty, use this Route targetPort (e.g. https, 443). When empty, resolve from oauth-openshift Service port 443 name, else https.
+csr_approver_repair_oauth_openshift_route_target_port: ""

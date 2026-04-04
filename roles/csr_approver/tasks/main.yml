@@ -599,6 +599,12 @@
       OPENSHIFT_INSTALL="{{ csr_approver_openshift_install_cmd }}"
       OC_CMD="{{ csr_approver_oc_cmd }}"
       REPAIR_OAUTH_ROUTE={{ csr_approver_repair_oauth_openshift_route | default(true) | bool | lower }}
+      MAX_OAUTH_PATCH={{ csr_approver_repair_oauth_openshift_route_max_attempts | int }}
+      MAX_OAUTH_REVERT={{ csr_approver_repair_oauth_openshift_route_max_reverts | int }}
+      OAUTH_WARN_INTERVAL={{ csr_approver_repair_oauth_openshift_route_warn_interval_seconds | int }}
+      OAUTH_BO_INIT={{ csr_approver_repair_oauth_openshift_route_backoff_initial_seconds | int }}
+      OAUTH_BO_MAX={{ csr_approver_repair_oauth_openshift_route_backoff_max_seconds | int }}
+      REPAIR_OAUTH_TARGET_FIXED={{ csr_approver_repair_oauth_openshift_route_target_port | default("", true) | to_json }}
       # Pending CSRs: match Red Hat UPI pattern (CSRs with no .status), not jsonpath status.conditions==null.
       CSR_PENDING_TEMPLATE='{% raw %}{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}{% endraw %}'
 
@@ -607,6 +613,36 @@
         $OPENSHIFT_INSTALL wait-for install-complete --dir="$INSTALL_DIR" --log-level=info
       ) &
       WAIT_PID=$!
+
+      _oauth_patch_attempts=0
+      _oauth_revert_count=0
+      _oauth_backoff_sec="${OAUTH_BO_INIT}"
+      _oauth_next_patch_epoch=0
+      _last_oauth_warn_epoch=0
+
+      _oauth_resolve_target() {
+        if [ -n "${REPAIR_OAUTH_TARGET_FIXED}" ]; then
+          printf '%s' "${REPAIR_OAUTH_TARGET_FIXED}"
+          return
+        fi
+        _svc_name="$($OC_CMD get svc oauth-openshift -n openshift-authentication -o jsonpath='{.spec.ports[?(@.port==443)].name}' 2>/dev/null || true)"
+        if [ -n "${_svc_name}" ]; then
+          printf '%s' "${_svc_name}"
+        else
+          printf 'https'
+        fi
+      }
+
+      _oauth_fatal_repair_stopped() {
+        echo "gryphon-forge: FATAL oauth-openshift Route repair stopped ($1)." >&2
+        echo "The authentication operator may keep reconciling spec.port.targetPort to 6443 (gryphon-forge issue #23)." >&2
+        echo "Capture for Red Hat / upstream: oc get route oauth-openshift -n openshift-authentication -o yaml" >&2
+        echo "oc logs -n openshift-authentication -l name=authentication-operator --tail=200" >&2
+        echo "Reference: https://github.com/iron-gryphon/gryphon-forge/issues/23" >&2
+        kill "$WAIT_PID" 2>/dev/null || true
+        wait "$WAIT_PID" 2>/dev/null || true
+        exit 1
+      }
 
       while kill -0 "$WAIT_PID" 2>/dev/null; do
         pending="$($OC_CMD get csr -o go-template="$CSR_PENDING_TEMPLATE" 2>/dev/null || true)"
@@ -618,27 +654,62 @@
             fi
           done <<< "$pending"
         fi
-        # GH-23: Route must target Service port (https/443), not pod targetPort 6443 — fixes OAuth/console via ingress.
-        # If targetPort reverts after a patch, log once per run to install_dir (GH-24 / TLS EOF follow-up).
+        # GH-23: Route must target Service port (name for 443 or numeric 443), not pod targetPort 6443.
+        # Backoff + caps keep CSR logs readable when the operator fights the patch (OCP 4.20 UPI / disconnected).
         if [ "${REPAIR_OAUTH_ROUTE}" = "true" ]; then
           _oauth_tp="$($OC_CMD get route oauth-openshift -n openshift-authentication -o jsonpath='{.spec.port.targetPort}' 2>/dev/null || true)"
-          if [ "${_oauth_tp}" = "6443" ]; then
-            if [ -f "$INSTALL_DIR/.gryphon-oauth-route-patched" ]; then
-              _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date 2>/dev/null || echo unknown)"
-              echo "gryphon-forge: WARNING oauth-openshift Route targetPort is 6443 again after a prior patch" \
-                "(issue #23). Operator reconciliation may be fighting the fix; capture route YAML and auth operator logs." \
-                "See issue #24 for TLS/router EOF once targetPort is https or 443."
-              if [ ! -f "$INSTALL_DIR/.gryphon-oauth-route-revert-logged" ]; then
-                echo "${_ts} oauth-openshift spec.port.targetPort reverted to 6443 after patch" >> "$INSTALL_DIR/.gryphon-oauth-route-revert.log"
-                : > "$INSTALL_DIR/.gryphon-oauth-route-revert-logged"
+          now_s="$(date +%s 2>/dev/null || echo 0)"
+          if [ "${_oauth_tp}" = "https" ] || [ "${_oauth_tp}" = "443" ]; then
+            rm -f "$INSTALL_DIR/.gryphon-oauth-route-patched" "$INSTALL_DIR/.gryphon-oauth-route-revert-logged" 2>/dev/null || true
+            _oauth_patch_attempts=0
+            _oauth_revert_count=0
+            _oauth_backoff_sec="${OAUTH_BO_INIT}"
+            _oauth_next_patch_epoch=0
+          elif [ "${_oauth_tp}" = "6443" ]; then
+            _had_prior_patch=0
+            [ -f "$INSTALL_DIR/.gryphon-oauth-route-patched" ] && _had_prior_patch=1
+            if [ "${_had_prior_patch}" -eq 1 ]; then
+              if [ "${_oauth_revert_count}" -ge "${MAX_OAUTH_REVERT}" ]; then
+                _oauth_fatal_repair_stopped "max reverts (${MAX_OAUTH_REVERT}) without stable Service-aligned targetPort"
+              fi
+              if [ "$((now_s - _last_oauth_warn_epoch))" -ge "${OAUTH_WARN_INTERVAL}" ]; then
+                echo "gryphon-forge: WARNING oauth-openshift Route targetPort is 6443 again after a prior patch" \
+                  "(issue #23). Operator may be fighting the fix; next patch subject to backoff. See issue #24 if targetPort is correct but TLS EOF persists."
+                _last_oauth_warn_epoch="${now_s}"
               fi
             fi
-            echo "gryphon-forge: patching oauth-openshift Route targetPort 6443 -> https (Service port name)"
-            $OC_CMD patch route oauth-openshift -n openshift-authentication --type=json \
-              -p='[{"op":"replace","path":"/spec/port/targetPort","value":"https"}]' 2>/dev/null || true
-            : > "$INSTALL_DIR/.gryphon-oauth-route-patched"
-          elif [ "${_oauth_tp}" = "https" ] || [ "${_oauth_tp}" = "443" ]; then
-            rm -f "$INSTALL_DIR/.gryphon-oauth-route-patched" "$INSTALL_DIR/.gryphon-oauth-route-revert-logged" 2>/dev/null || true
+            if [ "${now_s}" -lt "${_oauth_next_patch_epoch}" ]; then
+              :
+            elif [ "${_oauth_patch_attempts}" -ge "${MAX_OAUTH_PATCH}" ]; then
+              _oauth_fatal_repair_stopped "max patch attempts (${MAX_OAUTH_PATCH})"
+            else
+              _repair_val="$(_oauth_resolve_target)"
+              _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date 2>/dev/null || echo unknown)"
+              if [ "${_had_prior_patch}" -eq 1 ]; then
+                echo "${_ts} oauth-openshift spec.port.targetPort 6443 revert; patch attempt $((_oauth_patch_attempts + 1)) -> ${_repair_val}" \
+                  >> "$INSTALL_DIR/.gryphon-oauth-route-revert.log"
+              fi
+              echo "gryphon-forge: patching oauth-openshift Route targetPort 6443 -> ${_repair_val}" \
+                "(patch $((_oauth_patch_attempts + 1))/${MAX_OAUTH_PATCH}, next backoff ${_oauth_backoff_sec}s max ${OAUTH_BO_MAX}s)"
+              if [ "${_repair_val}" = "443" ]; then
+                _patch_arg='[{"op":"replace","path":"/spec/port/targetPort","value":443}]'
+              else
+                _patch_arg="$(printf '[{"op":"replace","path":"/spec/port/targetPort","value":"%s"}]' "${_repair_val}")"
+              fi
+              if $OC_CMD patch route oauth-openshift -n openshift-authentication --type=json -p="${_patch_arg}" 2>/dev/null; then
+                :
+              else
+                echo "gryphon-forge: WARNING oc patch route oauth-openshift failed (transient?); will retry after backoff" >&2
+              fi
+              _oauth_patch_attempts=$((_oauth_patch_attempts + 1))
+              if [ "${_had_prior_patch}" -eq 1 ]; then
+                _oauth_revert_count=$((_oauth_revert_count + 1))
+              fi
+              _oauth_next_patch_epoch=$((now_s + _oauth_backoff_sec))
+              _oauth_backoff_sec=$((_oauth_backoff_sec * 2))
+              [ "${_oauth_backoff_sec}" -gt "${OAUTH_BO_MAX}" ] && _oauth_backoff_sec="${OAUTH_BO_MAX}"
+              : > "$INSTALL_DIR/.gryphon-oauth-route-patched"
+            fi
           fi
         fi
         sleep "$INTERVAL"

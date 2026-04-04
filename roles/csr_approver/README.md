@@ -21,7 +21,13 @@ Watches for pending Certificate Signing Requests (CSRs) from Kubelet during Open
 | `csr_approver_bootstrap_etcd_tcp_preflight` | Before `wait-for bootstrap-complete`, SSH to first master as `core` and open TCP to bootstrap private IP **2379** and **2380** (retries; set `false` to skip) | true |
 | `csr_approver_etcd_tcp_preflight_retries` | Attempts for the master→bootstrap etcd TCP preflight | 36 |
 | `csr_approver_etcd_tcp_preflight_delay` | Seconds between preflight attempts | 10 |
-| `csr_approver_repair_oauth_openshift_route` | During `install-complete`, patch `oauth-openshift` Route if `targetPort` is wrongly `6443` (must be Service port `https`; [issue #23](https://github.com/iron-gryphon/gryphon-forge/issues/23)). If the value reverts after a patch, a warning is printed and a single line is appended to `{{ install_dir }}/.gryphon-oauth-route-revert.log` (see [issue #24](https://github.com/iron-gryphon/gryphon-forge/issues/24) for TLS/EOF after the Route is correct). | true |
+| `csr_approver_repair_oauth_openshift_route` | During `install-complete`, patch `oauth-openshift` Route if `targetPort` is wrongly `6443` (must match `oauth-openshift` **Service** port `443`, usually name `https`; [issue #23](https://github.com/iron-gryphon/gryphon-forge/issues/23)). Uses Service discovery when `csr_approver_repair_oauth_openshift_route_target_port` is empty. Applies exponential backoff between patches, throttles repeated stdout warnings, and stops after caps (see below). Each revert cycle appends a timestamped line to `{{ install_dir }}/.gryphon-oauth-route-revert.log`. If caps are hit, the script fails with instructions to capture Route YAML and authentication-operator logs for Red Hat / upstream (see [issue #24](https://github.com/iron-gryphon/gryphon-forge/issues/24) for TLS/router EOF after the Route is correct). | true |
+| `csr_approver_repair_oauth_openshift_route_max_attempts` | Maximum `oc patch` attempts per `approve-and-wait.sh` run | `40` |
+| `csr_approver_repair_oauth_openshift_route_max_reverts` | Fail after this many re-patches following a revert (6443 after a prior patch in the same run) | `12` |
+| `csr_approver_repair_oauth_openshift_route_warn_interval_seconds` | Minimum seconds between repeated WARNING lines when the route keeps reverting | `300` |
+| `csr_approver_repair_oauth_openshift_route_backoff_initial_seconds` | Initial delay before the next patch is allowed (doubles each patch, capped) | `30` |
+| `csr_approver_repair_oauth_openshift_route_backoff_max_seconds` | Maximum backoff between patches | `600` |
+| `csr_approver_repair_oauth_openshift_route_target_port` | Force Route `spec.port.targetPort` (e.g. `https` or `443`). Empty: read Service port `443` name via `oc`, else `https` | `""` |
 
 ## Connectivity validation
 
