@@ -191,6 +191,32 @@
             | combine({'endpointPublishingStrategy': ignition_ingress_eps_new}, recursive=true)
           }}
 
+    - name: Set NLB HostNetwork path flag for router replica merge
+      ansible.builtin.set_fact:
+        ignition_ingress_nlb_hostnetwork: >-
+          {{
+            (ignition_ingress_endpoint_publishing_hostnetwork | bool)
+            and (foundry_ingress_certificate_arn | default('') | length == 0)
+          }}
+
+    - name: Merge spec.replicas into IngressController spec (Forge NLB HostNetwork)
+      when:
+        - ignition_ingress_hostnetwork_router_replicas_merge | bool
+        - ignition_ingress_nlb_hostnetwork | bool
+      ansible.builtin.set_fact:
+        ignition_ingress_ic_spec_new: >-
+          {{
+            ignition_ingress_ic_spec_new | combine({
+              'replicas': (
+                (ignition_ingress_hostnetwork_router_replicas | default('', true) | trim | length > 0)
+                | ternary(
+                    ignition_ingress_hostnetwork_router_replicas | int,
+                    [2, (worker_count | default(0) | int) + (gpu_worker_count | default(0) | int)] | max
+                  )
+              )
+            }, recursive=true)
+          }}
+
     - name: Build full patched IngressController document
       ansible.builtin.set_fact:
         ignition_ingress_ic_patched: "{{ ignition_ingress_ic_in | combine({'spec': ignition_ingress_ic_spec_new}, recursive=true) }}"

@@ -14,6 +14,11 @@ ignition_ingress_endpoint_publishing_hostnetwork: true
 ignition_ingress_hostnetwork_http_port: 80
 ignition_ingress_hostnetwork_https_port: 443
 
+# When true and HostNetwork + NLB path apply: set spec.replicas on IngressController/default so each worker can schedule a router pod
+# (NLB registers all workers; default 2 replicas leaves half the targets unhealthy). Empty string = max(2, worker_count + gpu_worker_count).
+ignition_ingress_hostnetwork_router_replicas_merge: true
+ignition_ingress_hostnetwork_router_replicas: ""
+
 # Optional JSON (docker config style) with {"auths":{...}} for the private mirror only; merged with pull_secret_path for tag discovery.
 mirror_registry_dockerconfig_extra_path: ""  # noqa: var-naming[no-role-prefix]
 # Registry API scheme for discover-mirror-release-tag.sh (curl /v2/.../tags/list); use http only for plain-HTTP mirrors.

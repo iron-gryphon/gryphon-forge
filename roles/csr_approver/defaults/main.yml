@@ -44,5 +44,9 @@ csr_approver_repair_oauth_openshift_route_max_reverts: 12
 csr_approver_repair_oauth_openshift_route_warn_interval_seconds: 300
 csr_approver_repair_oauth_openshift_route_backoff_initial_seconds: 30
 csr_approver_repair_oauth_openshift_route_backoff_max_seconds: 600
+# When > 0: schedule oauth route re-patches on this fixed interval (seconds) while install-complete runs, instead of exponential backoff. 0 = backoff (default).
+csr_approver_repair_oauth_openshift_route_interval_seconds: 0
+# When true: attempt one oauth route repair immediately before openshift-install wait-for install-complete (same kubeconfig as the loop).
+csr_approver_repair_oauth_openshift_route_pre_wait_patch: false
 # When non-empty, use this Route targetPort (e.g. https, 443). When empty, resolve from oauth-openshift Service port 443 name, else https.
 csr_approver_repair_oauth_openshift_route_target_port: ""

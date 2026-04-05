@@ -30,9 +30,11 @@ After `openshift-install create manifests`, this role can patch `IngressControll
 |----------|--------|
 | `ignition_ingress_endpoint_publishing_hostnetwork` | When **true** and **`foundry_ingress_certificate_arn` is empty** (NLB path, no ACM/ALB), set `spec.endpointPublishingStrategy` to **`type: HostNetwork`** with `hostNetwork.httpPort` / `hostNetwork.httpsPort` (defaults **80** / **443**) so the router binds on the same ports the Forge NLB targets. **Disabled automatically** when an ACM cert ARN is set so the ALB/HTTPS path is unchanged. |
 | `ignition_ingress_hostnetwork_http_port` / `ignition_ingress_hostnetwork_https_port` | Override host ports when using HostNetwork (defaults match the CRD and Forge NLB target groups). |
+| `ignition_ingress_hostnetwork_router_replicas_merge` | When **true** and the same **HostNetwork + NLB** conditions apply, set **`spec.replicas`** on `IngressController/default` so router pod count matches worker capacity (Forge NLB target groups register every worker; the installer default of **2** routers can leave half the targets unhealthy). |
+| `ignition_ingress_hostnetwork_router_replicas` | Integer replica count for the default router when `ignition_ingress_hostnetwork_router_replicas_merge` is true. **Empty** (default): **`max(2, worker_count + gpu_worker_count)`** so you keep at least two for HA while scaling up. |
 | `ignition_ingress_default_dns_management_unmanaged` | When **true**, merge `loadBalancer.dnsManagementPolicy: Unmanaged` into the existing strategy—used on the **ALB** path (or if HostNetwork is off) so OpenShift does not fight Forge-owned **\*.apps** Route53 records. |
 
-Only `spec.endpointPublishingStrategy` is replaced or merged; the rest of `spec` is preserved. Re-running the patch is idempotent for a given variable set.
+`spec.endpointPublishingStrategy` is replaced or merged as above; when the NLB HostNetwork replica merge runs, **`spec.replicas`** is set on the same manifest. Other `spec` fields are preserved. Re-running the patch is idempotent for a given variable set.
 
 ## Prerequisites
 
