@@ -39,6 +39,25 @@
   tags:
     - ignition
 
+- name: Resolve mirror registry additional trust PEM for install-config (when using mirror)
+  ansible.builtin.set_fact:
+    ignition_trust_bundle_mirror_pem: >-
+      {{
+        (
+          (
+            (mirror_registry_additional_trust_bundle['value']
+             if (mirror_registry_additional_trust_bundle is mapping
+                 and (mirror_registry_additional_trust_bundle | default({})).get('value') is defined)
+             else (mirror_registry_additional_trust_bundle | default('')))
+            | trim
+          )
+          if (ignition_mirror_registry_url_resolved | default('') | length > 0)
+          else ''
+        )
+      }}
+  tags:
+    - ignition
+
 - name: Resolve pull secret path
   ansible.builtin.set_fact:
     ignition_pull_secret_resolved: "{{ pull_secret_path | expanduser }}"
@@ -157,6 +176,36 @@
   tags:
     - ignition
 
+- name: Generate OAuth apps API TLS material and trust bundle facts
+  ansible.builtin.include_tasks: oauth_apps_api_tls_material.yml
+  tags:
+    - ignition
+    - config
+
+- name: Merge PEM bundles for install-config additionalTrustBundle
+  ansible.builtin.set_fact:
+    ignition_install_config_trust_pem: >-
+      {{
+        [
+          ignition_trust_bundle_mirror_pem | default('') | trim,
+          ignition_trust_bundle_oauth_pem | default('') | trim
+        ]
+        | map('trim')
+        | reject('equalto', '')
+        | list
+        | join("\n\n")
+      }}
+  tags:
+    - ignition
+    - config
+
+- name: Normalize additionalTrustBundle PEM for openshift-install (JSON/Terraform literal \\n)
+  ansible.builtin.include_tasks:
+    file: normalize_install_trust_bundle_pem.yml
+  tags:
+    - ignition
+    - config
+
 - name: Create install-config.yaml
   ansible.builtin.template:
     src: install-config.yaml.j2
@@ -196,6 +245,12 @@
 
 - name: Patch manifests (DNS private zone, optional Unmanaged ingress DNS)
   ansible.builtin.include_tasks: patch_manifests_post_create.yml
+  tags:
+    - ignition
+
+- name: Add APIServer named certificate manifests for OAuth apps hostname on API NLB path
+  ansible.builtin.include_tasks: oauth_apps_api_manifests.yml
+  when: ignition_oauth_apps_api_named_certificate | default(true) | bool
   tags:
     - ignition
 

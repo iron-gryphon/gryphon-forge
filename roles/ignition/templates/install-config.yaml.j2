@@ -62,10 +62,12 @@ imageContentSources:
     source: {{ item.source }}
 {% endfor %}
 {% endif %}
-{% set _trust_bundle = (mirror_registry_additional_trust_bundle['value'] if (mirror_registry_additional_trust_bundle is mapping and (mirror_registry_additional_trust_bundle | default({})).get('value') is defined) else (mirror_registry_additional_trust_bundle | default(''))) | trim %}
-{% if _trust_bundle | length > 0 %}
+{% endif %}
+{% if ignition_install_config_trust_pem | default('') | trim | length > 0 %}
 additionalTrustBundle: |
-{{ _trust_bundle | indent(2, true) }}
+{{ ignition_install_config_trust_pem | trim | indent(2, true) }}
+{% if ignition_trust_bundle_oauth_pem | default('') | trim | length > 0 %}
+additionalTrustBundlePolicy: Always
 {% endif %}
 {% endif %}
 controlPlane:

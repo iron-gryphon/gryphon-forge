@@ -118,6 +118,7 @@ The **cluster-authentication-operator** often reconciles the `oauth-openshift` *
 2. **Route53** — explicit alias **`oauth-openshift.apps.<cluster>.<domain>`** → **API NLB** (more specific than `*.apps`, so OAuth DNS does not use the ingress NLB/ALB).
 3. **Control-plane security groups** already allow **6443** from the Vault VPC CIDR (NLB health checks and forwarded traffic).
 4. After **`wait-for bootstrap-complete`**, **csr_approver** deregisters the **bootstrap** instance from **`<cluster>-api-tg`** and **`<cluster>-mcs-tg`** (toggle: `csr_approver_deregister_bootstrap_from_api_mcs_after_complete`).
+5. **TLS (cluster-authentication-operator / `install-complete`)** — traffic to that hostname is still **kube-apiserver** on **6443**, so the server must present a certificate whose **SAN** includes **`oauth-openshift.apps.<cluster>.<domain>`**. Forge’s **ignition** role adds a **supported** **`APIServer`** `spec.servingCerts.namedCertificates` entry (plus a **`kubernetes.io/tls`** Secret in **`openshift-config`**) and merges the issuing CA into **`install-config` `additionalTrustBundle`** with **`additionalTrustBundlePolicy: Always`** so in-cluster TLS verification succeeds. Material lives under **`{{ install_dir }}/.forge/oauth-apps-api-tls/`** (regenerated if `cluster_name` / `base_domain` change). Toggle: **`ignition_oauth_apps_api_named_certificate`** (default **true**). For enterprise PKI, disable and supply your own cert via the same API pattern.
 
 **Check**
 
@@ -125,11 +126,15 @@ The **cluster-authentication-operator** often reconciles the `oauth-openshift` *
 dig +short oauth-openshift.apps.<cluster>.<domain>
 aws elbv2 describe-listeners --load-balancer-arn <api-nlb-arn> --query 'Listeners[?Port==`443`]'
 oc get route oauth-openshift -n openshift-authentication -o jsonpath='{.spec.port.targetPort}{"\n"}'
+openssl s_client -connect oauth-openshift.apps.<cluster>.<domain>:443 -servername oauth-openshift.apps.<cluster>.<domain> </dev/null 2>/dev/null | openssl x509 -noout -subject -ext subjectAltName
+oc get clusteroperator authentication
 ```
 
 **Validation** probes `https://oauth-openshift.apps.<cluster>.<domain>/` and records the result in `validation-report.txt` (`validation_check_oauth_apps_connectivity`).
 
 Forge’s **internal ingress NLB** (no ACM) still uses TCP listeners and health checks on **80** / **443** for `*-ingress-*-tg` for non-OAuth `*.apps` traffic; **OAuth** uses the API NLB **443** path above.
+
+**Workstations and browsers** still need to trust the OAuth serving chain if they hit that URL (Forge’s auto-generated CA, or your replacement CA). The cluster’s **`additionalTrustBundle`** path above is for **nodes and cluster components**, not end-user browser trust stores.
 
 ## Common Tasks
 

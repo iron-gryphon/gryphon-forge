@@ -1,0 +1,10 @@
+[req]
+distinguished_name = dn
+req_extensions = v3_req
+prompt = no
+[dn]
+CN = {{ ignition_oauth_apps_api_hostname }}
+[v3_req]
+subjectAltName = DNS:{{ ignition_oauth_apps_api_hostname }}
+extendedKeyUsage = serverAuth
+keyUsage = digitalSignature, keyEncipherment
