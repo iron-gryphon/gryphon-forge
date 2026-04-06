@@ -133,6 +133,8 @@
     target_type: instance
     modify_targets: false
     state: present
+    health_check_protocol: tcp
+    health_check_port: traffic-port
     region: "{{ foundry_region }}"
   register: aws_nodes_ingress_443_tg
   when: foundry_ingress_certificate_arn | default('') | length == 0
@@ -149,6 +151,8 @@
     target_type: instance
     modify_targets: false
     state: present
+    health_check_protocol: tcp
+    health_check_port: traffic-port
     region: "{{ foundry_region }}"
   register: aws_nodes_ingress_nlb_80_tg
   when: foundry_ingress_certificate_arn | default('') | length == 0

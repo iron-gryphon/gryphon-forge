@@ -34,8 +34,13 @@ csr_approver_bootstrap_etcd_master_tcp_probe: false
 csr_approver_bootstrap_etcd_tcp_preflight: true
 csr_approver_etcd_tcp_preflight_retries: 36
 csr_approver_etcd_tcp_preflight_delay: 10
-# GH-23: while wait-for install-complete runs, patch Route if targetPort incorrectly uses pod port 6443
+# --- OpenShift-only workaround (issue #23), NOT an AWS/NLB fix ---
+# When true, approve-and-wait.sh patches oauth-openshift Route spec.port.targetPort if the operator
+# sets pod port 6443 instead of the Service port (https/443). Forge NLB/TG correctness lives in aws_nodes;
+# disable this flag to quarantine cluster-side repair (e.g. when debugging pure transport/LB issues).
 csr_approver_repair_oauth_openshift_route: true
+# When repair runs, emit Route/Service/TLS, router pods, and (if aws CLI + region work) ingress TG health.
+csr_approver_oauth_route_repair_diagnostics: true
 # Max oc patch invocations per approve-and-wait.sh run (exponential backoff between patches when wrong).
 csr_approver_repair_oauth_openshift_route_max_attempts: 40
 # After this many post-revert re-patches, fail fast (operator keeps reconciling to 6443).
