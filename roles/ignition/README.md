@@ -49,7 +49,7 @@ After `openshift-install create manifests`, this role can patch `IngressControll
 | `mirror_registry_url` | Private registry host for release payload | `""` |
 | `mirror_registry_use_image_digest_sources` | Use `imageDigestSources` + `ImageDigestMirrorSet` (vs legacy ICSP) | `true` |
 | `openshift_install_release_image_override` | Full image ref (`registry/repo@sha256:…` or `:tag`) | `""` |
-| `ignition_mirror_discover_release_tag` | If `true`, discover highest tag for `ocp_version` minor (e.g. `4.20.*-x86_64`) on the mirror; **do not** set `openshift_install_release_image_override` | `true` |
+| `ignition_mirror_discover_release_tag` | If `true`, discover highest tag for `ocp_version` minor (e.g. `4.21.*-x86_64`) on the mirror; **do not** set `openshift_install_release_image_override` | `true` |
 | `ignition_mirror_discover_release_arch` | Arch suffix in tag (e.g. `x86_64`) | `x86_64` |
 | `ignition_mirror_discover_delegate_to_bastion` | Run discovery from bastion when present (recommended; mirror often only reachable from VPC) | `true` |
 

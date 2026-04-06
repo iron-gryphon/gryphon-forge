@@ -186,7 +186,7 @@ ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json -e ec2_key
 - **Extra vars:** `-e bastion_ssh_private_key_path=../gryphon-foundry/bastion-key.pem` (path relative to CWD when run from `gryphon-forge/`)
 - **Default:** `~/.ssh/<ec2_key_name>.pem` (only when bastion key matches OCP key)
 
-**Bastion OCP tools** — When using a bastion, the playbook does *not* copy `openshift-install` or `oc` from your controller (avoiding Mac/Linux binary mismatch). Instead, the bastion downloads Linux-compatible binaries directly from `mirror.openshift.com`, matching the `ocp_version` in config (e.g. `latest-4.20`). The bastion must have internet access to the mirror for the first run. Override `forge_ocp_mirror_base_url` for air-gapped or internal mirrors.
+**Bastion OCP tools** — When using a bastion, the playbook does *not* copy `openshift-install` or `oc` from your controller (avoiding Mac/Linux binary mismatch). Instead, the bastion downloads Linux-compatible binaries directly from `mirror.openshift.com`, matching the `ocp_version` in config (e.g. `latest-4.21`). The bastion must have internet access to the mirror for the first run. Override `forge_ocp_mirror_base_url` for air-gapped or internal mirrors.
 
 **Disconnected / Air-Gapped Install** — The Vault has no internet. OCP nodes must pull images from a mirror registry reachable via VPC peering (e.g. in Nest).
 

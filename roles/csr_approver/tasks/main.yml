@@ -748,7 +748,7 @@
         fi
         # GH-23 (OpenShift Route reconciliation): not an NLB fix — aws_nodes defines TCP passthrough ingress TGs.
         # Route must target Service port (name for 443 or numeric 443), not pod targetPort 6443.
-        # Backoff + caps keep CSR logs readable when the operator fights the patch (OCP 4.20 UPI / disconnected).
+        # Backoff + caps keep CSR logs readable when the operator fights the patch (OCP 4.21 UPI / disconnected).
         # Set csr_approver_repair_oauth_openshift_route_interval_seconds > 0 for fixed-interval re-patches instead of exponential backoff.
         if [ "${REPAIR_OAUTH_ROUTE}" = "true" ]; then
           _oauth_tp="$($OC_CMD get route oauth-openshift -n openshift-authentication -o jsonpath='{.spec.port.targetPort}' 2>/dev/null || true)"
