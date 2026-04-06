@@ -34,24 +34,5 @@ csr_approver_bootstrap_etcd_master_tcp_probe: false
 csr_approver_bootstrap_etcd_tcp_preflight: true
 csr_approver_etcd_tcp_preflight_retries: 36
 csr_approver_etcd_tcp_preflight_delay: 10
-# --- OpenShift-only workaround (issue #23), NOT an AWS/NLB fix ---
-# When true, approve-and-wait.sh patches oauth-openshift Route spec.port.targetPort if the operator
-# sets pod port 6443 instead of the Service port (https/443). Forge NLB/TG correctness lives in aws_nodes;
-# disable this flag to quarantine cluster-side repair (e.g. when debugging pure transport/LB issues).
-csr_approver_repair_oauth_openshift_route: true
-# When repair runs, emit Route/Service/TLS, router pods, and (if aws CLI + region work) ingress TG health.
-csr_approver_oauth_route_repair_diagnostics: true
-# Max oc patch invocations per approve-and-wait.sh run (exponential backoff between patches when wrong).
-csr_approver_repair_oauth_openshift_route_max_attempts: 40
-# After this many post-revert re-patches, fail fast (operator keeps reconciling to 6443).
-csr_approver_repair_oauth_openshift_route_max_reverts: 12
-# Minimum seconds between repeated WARNING lines to stdout when targetPort stays 6443 after a patch.
-csr_approver_repair_oauth_openshift_route_warn_interval_seconds: 300
-csr_approver_repair_oauth_openshift_route_backoff_initial_seconds: 30
-csr_approver_repair_oauth_openshift_route_backoff_max_seconds: 600
-# When > 0: schedule oauth route re-patches on this fixed interval (seconds) while install-complete runs, instead of exponential backoff. 0 = backoff (default).
-csr_approver_repair_oauth_openshift_route_interval_seconds: 0
-# When true: attempt one oauth route repair immediately before openshift-install wait-for install-complete (same kubeconfig as the loop).
-csr_approver_repair_oauth_openshift_route_pre_wait_patch: false
-# When non-empty, use this Route targetPort (e.g. https, 443). When empty, resolve from oauth-openshift Service port 443 name, else https.
-csr_approver_repair_oauth_openshift_route_target_port: ""
+# After wait-for bootstrap-complete, deregister bootstrap from {{ cluster_name }}-api-tg and -mcs-tg (AWS API on controller).
+csr_approver_deregister_bootstrap_from_api_mcs_after_complete: true

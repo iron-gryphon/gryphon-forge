@@ -110,25 +110,26 @@ Variables are overridden in the first play of `deploy_cluster.yml` from: 1) `inc
 
 ## Troubleshooting: OAuth, console, and `install-complete`
 
-On some UPI installs, `openshift-install wait-for install-complete` appears to stall while the console or authentication never becomes healthy. One cause is a misconfigured **Route** for OAuth: the `oauth-openshift` **Service** in `openshift-authentication` publishes port **443** (name **`https`**) and maps it to **pod** port **6443**. The Route’s `spec.port.targetPort` must reference the **Service** port (name `https` or number `443`), **not** `6443`. If `targetPort` is `6443`, it does not match any `Service.spec.ports[].port`, which can break passthrough routing through the default ingress controller.
+The **cluster-authentication-operator** often reconciles the `oauth-openshift` **Route** with `spec.port.targetPort` **`6443`** (pod port) while the **Service** publishes **`443` → 6443**. Passthrough traffic that hits the **default ingress** (router) then targets pod port **6443** on workers, where the router has no matching backend — symptoms include stalled `install-complete`, console/OAuth failures, and TLS **unexpected EOF** ([issues #23](https://github.com/iron-gryphon/gryphon-forge/issues/23) and [#24](https://github.com/iron-gryphon/gryphon-forge/issues/24)).
+
+**Forge’s fix (infrastructure, operator stays managed)** — do **not** patch the Route:
+
+1. **API NLB** (`<cluster>-api`) exposes TCP **443** forwarding to **`<cluster>-oauth-tg`**, which registers **control-plane** instances on **6443** (same kube-apiserver path as the API).
+2. **Route53** — explicit alias **`oauth-openshift.apps.<cluster>.<domain>`** → **API NLB** (more specific than `*.apps`, so OAuth DNS does not use the ingress NLB/ALB).
+3. **Control-plane security groups** already allow **6443** from the Vault VPC CIDR (NLB health checks and forwarded traffic).
+4. After **`wait-for bootstrap-complete`**, **csr_approver** deregisters the **bootstrap** instance from **`<cluster>-api-tg`** and **`<cluster>-mcs-tg`** (toggle: `csr_approver_deregister_bootstrap_from_api_mcs_after_complete`).
 
 **Check**
 
 ```bash
-oc get svc oauth-openshift -n openshift-authentication -o wide
+dig +short oauth-openshift.apps.<cluster>.<domain>
+aws elbv2 describe-listeners --load-balancer-arn <api-nlb-arn> --query 'Listeners[?Port==`443`]'
 oc get route oauth-openshift -n openshift-authentication -o jsonpath='{.spec.port.targetPort}{"\n"}'
 ```
 
-**Repair** (idempotent when the Route exists and is wrong)
+**Validation** probes `https://oauth-openshift.apps.<cluster>.<domain>/` and records the result in `validation-report.txt` (`validation_check_oauth_apps_connectivity`).
 
-```bash
-oc patch route oauth-openshift -n openshift-authentication --type=json \
-  -p='[{"op":"replace","path":"/spec/port/targetPort","value":"https"}]'
-```
-
-Forge’s **internal ingress NLB** (no ACM) uses **TCP** listeners and explicit **TCP** health checks on the traffic port for `*-ingress-443-tg` / `*-ingress-80-tg`, matching the API NLB pattern — not TLS termination at the LB.
-
-The **csr_approver** role runs an **OpenShift-only** patch (not an NLB fix) during `approve-and-wait.sh` while `install-complete` is in progress when `csr_approver_repair_oauth_openshift_route` is `true` (default). Set it to `false` to quarantine that workaround. With `csr_approver_oauth_route_repair_diagnostics` (default `true`), each patch logs Route/Service/TLS, router pods, and optional AWS ingress target health so you can tell transport vs reconciliation issues apart. If `targetPort` flips back to `6443` after a successful patch in the same run, the script prints a warning and appends one line to `.gryphon-oauth-route-revert.log` next to the install directory on the host running the script (typically the bastion sync of `install_dir`). The **validation** role records Route `targetPort` in `validation-report.txt` and emits a debug warning if it is still `6443`. If a bad value returns after the operator reconciles, capture `oc get route oauth-openshift -n openshift-authentication -o yaml` and authentication operator logs; root cause may be upstream for some releases. See [issue #23](https://github.com/iron-gryphon/gryphon-forge/issues/23). After `targetPort` is stable (`https` or `443`), unexpected TLS EOF from the router to OAuth often points to ingress/router or OVN paths — see [issue #24](https://github.com/iron-gryphon/gryphon-forge/issues/24).
+Forge’s **internal ingress NLB** (no ACM) still uses TCP listeners and health checks on **80** / **443** for `*-ingress-*-tg` for non-OAuth `*.apps` traffic; **OAuth** uses the API NLB **443** path above.
 
 ## Common Tasks
 

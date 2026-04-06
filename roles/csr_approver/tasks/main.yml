@@ -188,7 +188,7 @@
           Masters need TCP {{ api_int_dns_name }}:22623 for Ignition (https://api-int:22623/config/master).
           Check: 1) EC2 → Target groups → {{ cluster_name }}-api-tg and {{ cluster_name }}-mcs-tg: bootstrap registered;
           {{ cluster_name }}-mcs-tg should include only bootstrap until control plane serves MCS.
-          2) API NLB ({{ cluster_name }}-api) listeners include **both** 6443 and 22623 (api-int aliases to this NLB).
+          2) API NLB ({{ cluster_name }}-api) listeners include **6443**, **22623**, and **443** (OAuth express; api-int aliases to this NLB).
           3) Cross-zone load balancing enabled on that NLB (gryphon-forge sets this on apply).
           4) foundry_nest_vpc_cidr / SGs allow Vault + Nest CIDR to reach NLB targets; 5) peering routes Nest ↔ Vault.
           From bastion: timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443"
@@ -212,6 +212,14 @@
   register: csr_approver_bootstrap_wait
   changed_when: false
   failed_when: false
+  tags:
+    - csr_approval
+
+- name: Deregister bootstrap from API and MCS NLB target groups after bootstrap-complete
+  ansible.builtin.include_tasks: deregister_bootstrap_api_mcs.yml
+  when:
+    - csr_approver_bootstrap_wait.rc == 0
+    - csr_approver_deregister_bootstrap_from_api_mcs_after_complete | default(true) | bool
   tags:
     - csr_approval
 
@@ -570,7 +578,7 @@
       Bastion probes: under {{ csr_approver_install_dir }}/csr-fail/ (gather was disabled)
       {% endif %}
       Troubleshooting:
-      1) API NLB ({{ cluster_name }}-api) must expose **both** 6443 and 22623 on api-int, with cross-zone load balancing
+      1) API NLB ({{ cluster_name }}-api) must expose **6443**, **22623**, and **443** (OAuth express) on api-int, with cross-zone load balancing
       when targets span AZs (forge sets this on apply; fix in AWS if upgrading from a pre-merge stack).
       2) Verify foundry_nest_vpc_cidr is set (bootstrap SG allows 6443/22623 from Nest for bastion where applicable).
       3) Target health: {{ cluster_name }}-api-tg and {{ cluster_name }}-mcs-tg (MCS = bootstrap :22623); see aws-inspection-report.txt.
@@ -598,139 +606,12 @@
       INTERVAL={{ csr_approver_csr_check_interval }}
       OPENSHIFT_INSTALL="{{ csr_approver_openshift_install_cmd }}"
       OC_CMD="{{ csr_approver_oc_cmd }}"
-      REPAIR_OAUTH_ROUTE={{ csr_approver_repair_oauth_openshift_route | default(true) | bool | lower }}
-      MAX_OAUTH_PATCH={{ csr_approver_repair_oauth_openshift_route_max_attempts | int }}
-      MAX_OAUTH_REVERT={{ csr_approver_repair_oauth_openshift_route_max_reverts | int }}
-      OAUTH_WARN_INTERVAL={{ csr_approver_repair_oauth_openshift_route_warn_interval_seconds | int }}
-      OAUTH_BO_INIT={{ csr_approver_repair_oauth_openshift_route_backoff_initial_seconds | int }}
-      OAUTH_BO_MAX={{ csr_approver_repair_oauth_openshift_route_backoff_max_seconds | int }}
-      OAUTH_INTERVAL_SECONDS={{ csr_approver_repair_oauth_openshift_route_interval_seconds | int }}
-      PRE_WAIT_PATCH={{ csr_approver_repair_oauth_openshift_route_pre_wait_patch | default(false) | bool | lower }}
-      REPAIR_OAUTH_TARGET_FIXED={{ csr_approver_repair_oauth_openshift_route_target_port | default("", true) | to_json }}
-      CLUSTER_NAME={{ cluster_name | quote }}
-      AWS_REGION={{ foundry_region | default('', true) | quote }}
-      OAUTH_REPAIR_DIAG={{ csr_approver_oauth_route_repair_diagnostics | default(true) | bool | lower }}
       # Pending CSRs: match Red Hat UPI pattern (CSRs with no .status), not jsonpath status.conditions==null.
       CSR_PENDING_TEMPLATE='{% raw %}{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}{% endraw %}'
 
-      _oauth_patch_attempts=0
-      _oauth_revert_count=0
-      _oauth_backoff_sec="${OAUTH_BO_INIT}"
-      _oauth_next_patch_epoch=0
-      _last_oauth_warn_epoch=0
+      # OAuth/console reachability: aws_nodes API NLB :443 → masters :6443 + Route53 oauth-openshift.apps (issues #23/#24).
+      # No oc patch of Route oauth-openshift — cluster-authentication-operator remains source of truth.
 
-      _oauth_resolve_target() {
-        if [ -n "${REPAIR_OAUTH_TARGET_FIXED}" ]; then
-          printf '%s' "${REPAIR_OAUTH_TARGET_FIXED}"
-          return
-        fi
-        _svc_name="$($OC_CMD get svc oauth-openshift -n openshift-authentication -o jsonpath='{.spec.ports[?(@.port==443)].name}' 2>/dev/null || true)"
-        if [ -n "${_svc_name}" ]; then
-          printf '%s' "${_svc_name}"
-        else
-          printf 'https'
-        fi
-      }
-
-      _oauth_fatal_repair_stopped() {
-        echo "gryphon-forge: FATAL oauth-openshift Route repair stopped ($1)." >&2
-        echo "The authentication operator may keep reconciling spec.port.targetPort to 6443 (gryphon-forge issue #23)." >&2
-        echo "Capture for Red Hat / upstream: oc get route oauth-openshift -n openshift-authentication -o yaml" >&2
-        echo "oc logs -n openshift-authentication -l name=authentication-operator --tail=200" >&2
-        echo "Reference: https://github.com/iron-gryphon/gryphon-forge/issues/23" >&2
-        kill "$WAIT_PID" 2>/dev/null || true
-        wait "$WAIT_PID" 2>/dev/null || true
-        exit 1
-      }
-
-      _oauth_schedule_next_patch() {
-        _now_s="$1"
-        if [ "${OAUTH_INTERVAL_SECONDS}" -gt 0 ]; then
-          _oauth_next_patch_epoch=$((_now_s + OAUTH_INTERVAL_SECONDS))
-        else
-          _oauth_next_patch_epoch=$((_now_s + _oauth_backoff_sec))
-          _oauth_backoff_sec=$((_oauth_backoff_sec * 2))
-          [ "${_oauth_backoff_sec}" -gt "${OAUTH_BO_MAX}" ] && _oauth_backoff_sec="${OAUTH_BO_MAX}"
-        fi
-      }
-
-      _oauth_ingress_tg_health_dump() {
-        echo "  ingress NLB target groups (AWS; skip if ALB ingress, no aws CLI, or no credentials/region):"
-        if ! command -v aws >/dev/null 2>&1; then
-          echo "    aws: not in PATH"
-          return 0
-        fi
-        if [ -z "${AWS_REGION}" ]; then
-          echo "    AWS_REGION unset — skip describe-target-health"
-          return 0
-        fi
-        for _tg in "${CLUSTER_NAME}-ingress-443-tg" "${CLUSTER_NAME}-ingress-80-tg"; do
-          _arn="$(aws elbv2 describe-target-groups --names "${_tg}" --region "${AWS_REGION}" \
-            --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)"
-          if [ -z "${_arn}" ] || [ "${_arn}" = "None" ]; then
-            echo "    ${_tg}: not found or API error (normal when ingress uses ALB only)"
-            continue
-          fi
-          echo "    ${_tg} (${_arn}) target health:"
-          aws elbv2 describe-target-health --target-group-arn "${_arn}" --region "${AWS_REGION}" \
-            --output text 2>/dev/null | sed 's/^/      /' | head -40 \
-            || echo "      (describe-target-health failed)"
-        done
-      }
-
-      _oauth_emit_repair_diagnostics() {
-        _phase="${1:-context}"
-        if [ "${OAUTH_REPAIR_DIAG}" != "true" ]; then
-          return 0
-        fi
-        echo "gryphon-forge: OAuth Route repair diagnostics (${_phase}) — GH-23 workaround" \
-          " (csr_approver_repair_oauth_openshift_route=false to disable). Not an NLB fix."
-        _rt_tp="$($OC_CMD get route oauth-openshift -n openshift-authentication \
-          -o jsonpath='{.spec.port.targetPort}' 2>/dev/null || true)"
-        _rt_tls="$($OC_CMD get route oauth-openshift -n openshift-authentication \
-          -o jsonpath='{.spec.tls.termination}' 2>/dev/null || true)"
-        echo "  route oauth-openshift spec.port.targetPort: ${_rt_tp:-<missing>}"
-        echo "  route oauth-openshift spec.tls.termination: ${_rt_tls:-<none>}"
-        _jp='{range .spec.ports[*]}{.name}:{.port}->{.targetPort} {end}'
-        _svp="$($OC_CMD get svc oauth-openshift -n openshift-authentication \
-          -o jsonpath="${_jp}" 2>/dev/null | tr -d '\n' || true)"
-        echo "  svc oauth-openshift ports (name:port->targetPort): ${_svp:-<missing>}"
-        echo "  openshift-ingress pods (router placement):"
-        _pods="$($OC_CMD get pods -n openshift-ingress -o wide 2>/dev/null | head -30 || true)"
-        if [ -n "${_pods}" ]; then
-          printf '%s\n' "${_pods}" | sed 's/^/    /'
-        else
-          echo "    (none or oc get pods failed)"
-        fi
-        _oauth_ingress_tg_health_dump
-      }
-
-      # Optional one-shot repair before install-complete (issue #23); WAIT_PID not set yet — no-op in _oauth_fatal kill.
-      if [ "${REPAIR_OAUTH_ROUTE}" = "true" ] && [ "${PRE_WAIT_PATCH}" = "true" ]; then
-        _tp_pre="$($OC_CMD get route oauth-openshift -n openshift-authentication -o jsonpath='{.spec.port.targetPort}' 2>/dev/null || true)"
-        if [ "${_tp_pre}" = "6443" ]; then
-          _repair_pre="$(_oauth_resolve_target)"
-          _ts_pre="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date 2>/dev/null || echo unknown)"
-          _oauth_emit_repair_diagnostics "pre-patch (before wait-for install-complete)"
-          echo "gryphon-forge: pre-wait patch oauth-openshift Route targetPort 6443 -> ${_repair_pre}"
-          if [ "${_repair_pre}" = "443" ]; then
-            _patch_pre='[{"op":"replace","path":"/spec/port/targetPort","value":443}]'
-          else
-            _patch_pre="$(printf '[{"op":"replace","path":"/spec/port/targetPort","value":"%s"}]' "${_repair_pre}")"
-          fi
-          if $OC_CMD patch route oauth-openshift -n openshift-authentication --type=json -p="${_patch_pre}" 2>/dev/null; then
-            _oauth_patch_attempts=$((_oauth_patch_attempts + 1))
-            : > "$INSTALL_DIR/.gryphon-oauth-route-patched"
-            _now_pre="$(date +%s 2>/dev/null || echo 0)"
-            _oauth_schedule_next_patch "${_now_pre}"
-            _oauth_emit_repair_diagnostics "post-patch (after pre-wait patch)"
-          else
-            echo "gryphon-forge: WARNING pre-wait oc patch route oauth-openshift failed (transient?); loop will retry" >&2
-          fi
-        fi
-      fi
-
-      # Run install-complete in background; while waiting, approve CSRs
       (
         $OPENSHIFT_INSTALL wait-for install-complete --dir="$INSTALL_DIR" --log-level=info
       ) &
@@ -745,69 +626,6 @@
               echo "Approved $csr"
             fi
           done <<< "$pending"
-        fi
-        # GH-23 (OpenShift Route reconciliation): not an NLB fix — aws_nodes defines TCP passthrough ingress TGs.
-        # Route must target Service port (name for 443 or numeric 443), not pod targetPort 6443.
-        # Backoff + caps keep CSR logs readable when the operator fights the patch (OCP 4.21 UPI / disconnected).
-        # Set csr_approver_repair_oauth_openshift_route_interval_seconds > 0 for fixed-interval re-patches instead of exponential backoff.
-        if [ "${REPAIR_OAUTH_ROUTE}" = "true" ]; then
-          _oauth_tp="$($OC_CMD get route oauth-openshift -n openshift-authentication -o jsonpath='{.spec.port.targetPort}' 2>/dev/null || true)"
-          now_s="$(date +%s 2>/dev/null || echo 0)"
-          if [ "${_oauth_tp}" = "https" ] || [ "${_oauth_tp}" = "443" ]; then
-            rm -f "$INSTALL_DIR/.gryphon-oauth-route-patched" "$INSTALL_DIR/.gryphon-oauth-route-revert-logged" 2>/dev/null || true
-            _oauth_patch_attempts=0
-            _oauth_revert_count=0
-            _oauth_backoff_sec="${OAUTH_BO_INIT}"
-            _oauth_next_patch_epoch=0
-          elif [ "${_oauth_tp}" = "6443" ]; then
-            _had_prior_patch=0
-            [ -f "$INSTALL_DIR/.gryphon-oauth-route-patched" ] && _had_prior_patch=1
-            if [ "${_had_prior_patch}" -eq 1 ]; then
-              if [ "${_oauth_revert_count}" -ge "${MAX_OAUTH_REVERT}" ]; then
-                _oauth_fatal_repair_stopped "max reverts (${MAX_OAUTH_REVERT}) without stable Service-aligned targetPort"
-              fi
-              if [ "$((now_s - _last_oauth_warn_epoch))" -ge "${OAUTH_WARN_INTERVAL}" ]; then
-                echo "gryphon-forge: WARNING oauth-openshift Route targetPort is 6443 again after a prior patch" \
-                  "(issue #23). Operator may be fighting the fix; next patch subject to backoff. See issue #24 if targetPort is correct but TLS EOF persists."
-                _last_oauth_warn_epoch="${now_s}"
-              fi
-            fi
-            if [ "${now_s}" -lt "${_oauth_next_patch_epoch}" ]; then
-              :
-            elif [ "${_oauth_patch_attempts}" -ge "${MAX_OAUTH_PATCH}" ]; then
-              _oauth_fatal_repair_stopped "max patch attempts (${MAX_OAUTH_PATCH})"
-            else
-              _repair_val="$(_oauth_resolve_target)"
-              _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date 2>/dev/null || echo unknown)"
-              if [ "${_had_prior_patch}" -eq 1 ]; then
-                _oauth_rv="$($OC_CMD get route oauth-openshift -n openshift-authentication \
-                  -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null || true)"
-                echo "${_ts} resourceVersion=${_oauth_rv} oauth-openshift targetPort=6443 revert;" \
-                  " patch $((_oauth_patch_attempts + 1)) -> ${_repair_val}" \
-                  >> "$INSTALL_DIR/.gryphon-oauth-route-revert.log"
-              fi
-              _oauth_emit_repair_diagnostics "pre-patch (install-complete loop)"
-              echo "gryphon-forge: patching oauth-openshift Route targetPort 6443 -> ${_repair_val}" \
-                "(patch $((_oauth_patch_attempts + 1))/${MAX_OAUTH_PATCH}; interval=${OAUTH_INTERVAL_SECONDS}s" \
-                " backoff=${_oauth_backoff_sec}s max=${OAUTH_BO_MAX}s)"
-              if [ "${_repair_val}" = "443" ]; then
-                _patch_arg='[{"op":"replace","path":"/spec/port/targetPort","value":443}]'
-              else
-                _patch_arg="$(printf '[{"op":"replace","path":"/spec/port/targetPort","value":"%s"}]' "${_repair_val}")"
-              fi
-              if $OC_CMD patch route oauth-openshift -n openshift-authentication --type=json -p="${_patch_arg}" 2>/dev/null; then
-                _oauth_emit_repair_diagnostics "post-patch (install-complete loop)"
-              else
-                echo "gryphon-forge: WARNING oc patch route oauth-openshift failed (transient?); will retry after backoff" >&2
-              fi
-              _oauth_patch_attempts=$((_oauth_patch_attempts + 1))
-              if [ "${_had_prior_patch}" -eq 1 ]; then
-                _oauth_revert_count=$((_oauth_revert_count + 1))
-              fi
-              _oauth_schedule_next_patch "${now_s}"
-              : > "$INSTALL_DIR/.gryphon-oauth-route-patched"
-            fi
-          fi
         fi
         sleep "$INTERVAL"
       done

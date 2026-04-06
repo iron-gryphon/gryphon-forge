@@ -213,7 +213,7 @@
             'from_port': 6443,
             'to_port': 6443,
             'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
-            'rule_desc': 'API from Vault (NLB health checks)'
+            'rule_desc': 'API + OAuth express (API NLB :6443/:443 to masters :6443)'
           },
           {
             'proto': 'tcp',

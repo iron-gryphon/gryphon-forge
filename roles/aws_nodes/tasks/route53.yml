@@ -35,6 +35,23 @@
     - aws_nodes
     - route53
 
+# More specific than *.apps — OAuth / console use this hostname with passthrough to apiserver :6443 (API NLB :443 express lane).
+- name: Create oauth-openshift apps Route53 record (alias to API NLB)
+  amazon.aws.route53:
+    hosted_zone_id: "{{ foundry_internal_hosted_zone_id }}"
+    record: "oauth-openshift.apps.{{ cluster_name }}.{{ base_domain }}"
+    type: A
+    alias: true
+    alias_hosted_zone_id: "{{ aws_nodes_api_nlb.load_balancer.canonical_hosted_zone_id }}"
+    alias_evaluate_target_health: false
+    value: "{{ aws_nodes_api_nlb.load_balancer.dns_name }}"
+    state: present
+    overwrite: true
+  when: aws_nodes_api_nlb.load_balancer is defined
+  tags:
+    - aws_nodes
+    - route53
+
 - name: Get Ingress ALB info
   amazon.aws.elb_application_lb_info:
     names: "{{ cluster_name }}-ingress"
