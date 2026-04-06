@@ -36,3 +36,5 @@ csr_approver_etcd_tcp_preflight_retries: 36
 csr_approver_etcd_tcp_preflight_delay: 10
 # After wait-for bootstrap-complete, deregister bootstrap from {{ cluster_name }}-api-tg and -mcs-tg (AWS API on controller).
 csr_approver_deregister_bootstrap_from_api_mcs_after_complete: true
+# When true and wait-for install-complete fails: emit short console/ingress troubleshooting hints (oc/AWS/router; no secrets). See AGENTS.md (b) vs OAuth (a).
+csr_approver_emit_console_ingress_hints_on_install_failure: true

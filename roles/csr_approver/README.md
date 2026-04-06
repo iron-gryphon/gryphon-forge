@@ -17,6 +17,7 @@ Watches for pending Certificate Signing Requests (CSRs) from Kubelet during Open
 | `csr_approver_gather_on_failure` | When bootstrap fails, gather logs and fetch to controller | true |
 | `csr_approver_gather_failure_dest` | Override path for gathered logs; default `install_dir/bootstrap-failure-logs/<cluster>-<epoch>` on the controller | (none) |
 | `csr_approver_bastion_lb_diagnostics_on_failure` | On CSR/bootstrap/API/install-complete failure, write `bastion-diagnostics.txt` (aws_nodes `bastion_lb_diagnostics.yml`) | true |
+| `csr_approver_emit_console_ingress_hints_on_install_failure` | When `wait-for install-complete` fails, print short console/ingress troubleshooting hints (not OAuth/API NLB); see **AGENTS.md** | false |
 | `csr_approver_bootstrap_etcd_master_tcp_probe` | On bootstrap failure with gather enabled, also write `master-to-bootstrap-etcd-tcp.txt` (SSH from bastion or localhost to first master as `core`, `/dev/tcp` to bootstrap :2379/:2380; needs OCP SSH key) | false |
 | `csr_approver_bootstrap_etcd_tcp_preflight` | Before `wait-for bootstrap-complete`, SSH to first master as `core` and open TCP to bootstrap private IP **2379** and **2380** (retries; set `false` to skip) | true |
 | `csr_approver_etcd_tcp_preflight_retries` | Attempts for the master→bootstrap etcd TCP preflight | 36 |
