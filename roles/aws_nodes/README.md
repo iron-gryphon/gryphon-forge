@@ -96,6 +96,7 @@ Forge applies security groups **before** EC2 launch (`security_groups.yml` then 
 | **etcd bootstrap join** | Vault VPC CIDR | bootstrap | **2379–2380** | Masters in private subnets reach bootstrap etcd |
 | **etcd bootstrap join** | `<cluster>-master-sg` | bootstrap | **2379–2380** | Explicit reference to control-plane SG (merged with `purge_rules: false`) |
 | API / MCS / kubelet / etcd (in-cluster) | Vault VPC CIDR | `<cluster>-master-sg` | 6443, 22623, 10250, **2379–2380** | Ingress **to** masters (peer etcd); egress uses the module default allow-all unless you override elsewhere |
+| **OVN-Kubernetes overlay (GENEVE)** | Vault VPC CIDR | `<cluster>-master-sg`, `<cluster>-worker-sg` | **UDP 6081** | Pod traffic between node primary IPs; required when console or other pods run on different nodes than `router-default` (hostNetwork) |
 | SSH to masters | Vault CIDR, Nest, bastion SG, RFC1918 | master | 22 | |
 
 **Bootstrap IP and ignition:** Master ignition references the bootstrap machine’s **private IP** for initial etcd endpoints. If the bootstrap instance is **replaced** and gets a new ENI address, regenerate ignition and reprovision masters (or align AWS so the bootstrap IP matches what the cluster expects). Running only `--tags ec2` after replacing bootstrap without re-running **ignition** can strand the cluster with a stale bootstrap address.

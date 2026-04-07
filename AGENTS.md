@@ -144,6 +144,8 @@ The **console** operator (and most application Routes) use hostnames under **`*.
 
 **Useful checks (b)** — from a host that can reach Vault ingress (often a node or bastion in the right network): `oc get co console ingress`, `oc describe route console -n openshift-console`, ingress target group health in AWS for **`…-ingress-443-tg`**. For router backend detail: **`oc exec -n openshift-ingress deploy/router-default -- grep -i openshift-console /var/lib/haproxy/conf/haproxy.config`**; HAProxy stats may be on pod port **1936** if exposed.
 
+- If ingress target groups are healthy but the console route still returns **503**, and TLS or TCP from **`router-default`** toward the **console pod IP** (for example **`:8443`**) **never completes**, confirm EC2 security groups allow **UDP 6081** between nodes in the Vault VPC (**OVN-Kubernetes GENEVE**). Forge adds this on master and worker SGs; existing clusters need the **`ec2` / `security_groups`** stage re-run or a manual AWS rule until Ansible is replayed.
+
 ### Disconnected clusters: `oc run` and debug images
 
 On **air-gapped** clusters, **`oc run`** / ephemeral pods that pull **public** images (for example **`curlimages/curl`**) often **hang or fail** (`ImagePullBackOff`, **Condition ready** timeout) because the registry is unreachable. Prefer a **mirrored** image from your release/mirror, **`oc debug node/…`** / **`oc debug pod/…`**, **`oc exec`** into **`openshift-ingress`** **`router-default`**, or tools shipped in an image already on the cluster (for example the release payload tools image from your mirror).
