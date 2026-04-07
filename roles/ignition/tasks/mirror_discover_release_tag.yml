@@ -1,5 +1,5 @@
 ---
-# Optional: set openshift_install_release_image_override from highest tag matching ocp_version minor (e.g. 4.20.*-x86_64).
+# Optional: set openshift_install_release_image_override from highest tag matching ocp_version minor (e.g. 4.21.*-x86_64).
 # Requires jq on the host that runs the script; skopeo optional (curl fallback). See scripts/discover-mirror-release-tag.sh.
 - name: Resolve trust bundle for mirror discovery TLS (optional)
   ansible.builtin.set_fact:
@@ -12,7 +12,7 @@
   ansible.builtin.assert:
     that: ocp_version.split('.') | length >= 2
     fail_msg: >-
-      ocp_version must include a minor (e.g. 4.20) when ignition_mirror_discover_release_tag is true.
+      ocp_version must include a minor (e.g. 4.21) when ignition_mirror_discover_release_tag is true.
       Current value: {{ ocp_version }}
 
 - name: Set OCP minor string for discovery

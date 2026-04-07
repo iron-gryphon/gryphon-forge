@@ -1,0 +1,88 @@
+---
+# After openshift-install wait-for bootstrap-complete, remove bootstrap from API/MCS target groups
+# so the NLB no longer forwards install-time API/MCS to the temporary node.
+
+- name: Resolve region for ELB deregistration
+  ansible.builtin.set_fact:
+    csr_approver_deregister_region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region | default(''))) }}"
+
+- name: Skip bootstrap deregister when region unset (cannot call AWS)
+  ansible.builtin.debug:
+    msg: "Skipping bootstrap deregister: foundry_region/region not available on this host."
+  when: csr_approver_deregister_region | length == 0
+
+- name: Deregister bootstrap from API and MCS target groups (AWS)
+  when: csr_approver_deregister_region | length > 0
+  block:
+    - name: Find bootstrap instance for this cluster
+      amazon.aws.ec2_instance_info:
+        filters:
+          "tag:cluster": "{{ cluster_name }}"
+          "tag:role": "bootstrap"
+          "instance-state-name":
+            - pending
+            - running
+            - stopped
+            - stopping
+        region: "{{ csr_approver_deregister_region }}"
+      register: csr_approver_bootstrap_for_deregister
+      delegate_to: localhost
+      connection: local
+      run_once: true
+
+    - name: Set bootstrap instance IDs to deregister from NLB target groups
+      ansible.builtin.set_fact:
+        csr_approver_bootstrap_ids_for_lb: >-
+          {{ csr_approver_bootstrap_for_deregister.instances | default([]) | map(attribute='instance_id') | list }}
+
+    - name: Describe API target group for deregistration
+      community.aws.elb_target_group_info:
+        names:
+          - "{{ cluster_name }}-api-tg"
+        region: "{{ csr_approver_deregister_region }}"
+      register: csr_approver_dereg_api_tg
+      delegate_to: localhost
+      connection: local
+      run_once: true
+      when: (csr_approver_bootstrap_ids_for_lb | default([]) | length) > 0
+
+    - name: Describe MCS target group for deregistration
+      community.aws.elb_target_group_info:
+        names:
+          - "{{ cluster_name }}-mcs-tg"
+        region: "{{ csr_approver_deregister_region }}"
+      register: csr_approver_dereg_mcs_tg
+      delegate_to: localhost
+      connection: local
+      run_once: true
+      when: (csr_approver_bootstrap_ids_for_lb | default([]) | length) > 0
+
+    - name: Deregister bootstrap from API target group (6443)
+      community.aws.elb_target:
+        target_group_arn: "{{ csr_approver_dereg_api_tg.target_groups[0].target_group_arn }}"
+        target_id: "{{ item }}"
+        target_port: 6443
+        state: absent
+        region: "{{ csr_approver_deregister_region }}"
+      loop: "{{ csr_approver_bootstrap_ids_for_lb | default([]) }}"
+      when:
+        - (csr_approver_bootstrap_ids_for_lb | default([]) | length) > 0
+        - csr_approver_dereg_api_tg.target_groups | default([]) | length > 0
+      delegate_to: localhost
+      connection: local
+      run_once: true
+
+    - name: Deregister bootstrap from MCS target group (22623)
+      community.aws.elb_target:
+        target_group_arn: "{{ csr_approver_dereg_mcs_tg.target_groups[0].target_group_arn }}"
+        target_id: "{{ item }}"
+        target_port: 22623
+        state: absent
+        region: "{{ csr_approver_deregister_region }}"
+      loop: "{{ csr_approver_bootstrap_ids_for_lb | default([]) }}"
+      when:
+        - (csr_approver_bootstrap_ids_for_lb | default([]) | length) > 0
+        - csr_approver_dereg_mcs_tg.target_groups | default([]) | length > 0
+      delegate_to: localhost
+      connection: local
+      run_once: true

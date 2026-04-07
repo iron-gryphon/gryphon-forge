@@ -659,6 +659,7 @@
   vars:
     cluster_name: "{{ hostvars['localhost']['cluster_name'] }}"
     base_domain: "{{ hostvars['localhost']['base_domain'] }}"
+    foundry_region: "{{ hostvars['localhost']['foundry_region'] | default('', true) }}"
     forge_api_install_dir: "{{ bastion_install_dir if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else install_dir }}"
     forge_use_bastion_bins: "{{ (hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0 }}"
   roles:

@@ -15,12 +15,14 @@ Watches for pending Certificate Signing Requests (CSRs) from Kubelet during Open
 | `csr_approver_mcs_connectivity_timeout` | Seconds to wait for Machine Config Server TCP 22623 on api-int (master Ignition) | 300 |
 | `csr_approver_skip_api_tg_preflight` | Skip controller-side check that `*-api-tg` has registered targets | false |
 | `csr_approver_gather_on_failure` | When bootstrap fails, gather logs and fetch to controller | true |
-| `csr_approver_gather_failure_dest` | Override path for gathered logs; default `playbook_dir/bootstrap-failure-logs/<cluster>-<epoch>` | (none) |
+| `csr_approver_gather_failure_dest` | Override path for gathered logs; default `install_dir/bootstrap-failure-logs/<cluster>-<epoch>` on the controller | (none) |
 | `csr_approver_bastion_lb_diagnostics_on_failure` | On CSR/bootstrap/API/install-complete failure, write `bastion-diagnostics.txt` (aws_nodes `bastion_lb_diagnostics.yml`) | true |
+| `csr_approver_emit_console_ingress_hints_on_install_failure` | When `wait-for install-complete` fails, print short console/ingress troubleshooting hints (not OAuth/API NLB); see **AGENTS.md** | false |
 | `csr_approver_bootstrap_etcd_master_tcp_probe` | On bootstrap failure with gather enabled, also write `master-to-bootstrap-etcd-tcp.txt` (SSH from bastion or localhost to first master as `core`, `/dev/tcp` to bootstrap :2379/:2380; needs OCP SSH key) | false |
 | `csr_approver_bootstrap_etcd_tcp_preflight` | Before `wait-for bootstrap-complete`, SSH to first master as `core` and open TCP to bootstrap private IP **2379** and **2380** (retries; set `false` to skip) | true |
 | `csr_approver_etcd_tcp_preflight_retries` | Attempts for the master→bootstrap etcd TCP preflight | 36 |
 | `csr_approver_etcd_tcp_preflight_delay` | Seconds between preflight attempts | 10 |
+| `csr_approver_deregister_bootstrap_from_api_mcs_after_complete` | After `wait-for bootstrap-complete`, deregister the bootstrap instance from `<cluster>-api-tg` and `<cluster>-mcs-tg` (AWS API delegated to the controller). OAuth uses a separate `<cluster>-oauth-tg` on the API NLB; see **aws_nodes** and [issues #23](https://github.com/iron-gryphon/gryphon-forge/issues/23)/[#24](https://github.com/iron-gryphon/gryphon-forge/issues/24). | true |
 
 ## Connectivity validation
 
@@ -28,14 +30,14 @@ Before waiting for bootstrap completion, the role validates:
 
 1. **DNS resolution** — `api-int.<cluster>.<base_domain>` must resolve (retries with `csr_approver_dns_resolution_delay` to allow Route53 / VPC DNS propagation).
 2. **API NLB targets (controller)** — Unless `csr_approver_skip_api_tg_preflight` is true, queries AWS for `<cluster>-api-tg` and fails fast if there are no registered targets (avoids a long bastion `wait_for` when the NLB has nothing to forward to).
-3. **TCP connectivity** — Ports **6443** and **22623** on `api-int` must be reachable (MCS on 22623 serves master Ignition; same NLB as API in gryphon-forge).
+3. **TCP connectivity** — Ports **6443** and **22623** on `api-int` must be reachable (MCS on 22623 serves master Ignition; same NLB as API in gryphon-forge). The API NLB also exposes **443** for the OAuth hostname express lane (`oauth-openshift.apps` in Route53).
 4. **Master → bootstrap etcd** — Unless `csr_approver_bootstrap_etcd_tcp_preflight` is false, verifies the first control-plane node can open **2379** and **2380** to the bootstrap private IP (validates SG/NACL path end-to-end after MCS is up).
 
 If either check fails, the role fails with a clear message instead of blocking on `openshift-install wait-for bootstrap-complete`. When `csr_approver_bastion_lb_diagnostics_on_failure` is true, those failures also record bastion-side `getent`/TCP probes under `{{ csr_approver_install_dir }}/csr-fail/<cluster>-<epoch>/`.
 
 When bootstrap fails and `csr_approver_gather_on_failure` is true, the role:
 
-1. Runs `openshift-install gather bootstrap` and fetches `.openshift_install.log` plus the log bundle from bastion to the controller at `playbook_dir/bootstrap-failure-logs/<cluster>-<epoch>/`
+1. Runs `openshift-install gather bootstrap` and fetches `.openshift_install.log` plus the log bundle from bastion to the controller at `install_dir/bootstrap-failure-logs/<cluster>-<epoch>/`
 2. Inspects the API target group (`<cluster>-api-tg`) and bootstrap instance in AWS, writing `aws-inspection-report.txt` with target health status and instance state for troubleshooting
 3. Optionally (`csr_approver_bootstrap_etcd_master_tcp_probe: true`) records `master-to-bootstrap-etcd-tcp.txt` with bootstrap instance details and TCP probes from a control-plane node toward bootstrap etcd
 

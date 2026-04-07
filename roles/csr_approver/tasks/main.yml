@@ -188,7 +188,7 @@
           Masters need TCP {{ api_int_dns_name }}:22623 for Ignition (https://api-int:22623/config/master).
           Check: 1) EC2 → Target groups → {{ cluster_name }}-api-tg and {{ cluster_name }}-mcs-tg: bootstrap registered;
           {{ cluster_name }}-mcs-tg should include only bootstrap until control plane serves MCS.
-          2) API NLB ({{ cluster_name }}-api) listeners include **both** 6443 and 22623 (api-int aliases to this NLB).
+          2) API NLB ({{ cluster_name }}-api) listeners include **6443**, **22623**, and **443** (OAuth express; api-int aliases to this NLB).
           3) Cross-zone load balancing enabled on that NLB (gryphon-forge sets this on apply).
           4) foundry_nest_vpc_cidr / SGs allow Vault + Nest CIDR to reach NLB targets; 5) peering routes Nest ↔ Vault.
           From bastion: timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443"
@@ -215,6 +215,14 @@
   tags:
     - csr_approval
 
+- name: Deregister bootstrap from API and MCS NLB target groups after bootstrap-complete
+  ansible.builtin.include_tasks: deregister_bootstrap_api_mcs.yml
+  when:
+    - csr_approver_bootstrap_wait.rc == 0
+    - csr_approver_deregister_bootstrap_from_api_mcs_after_complete | default(true) | bool
+  tags:
+    - csr_approval
+
 - name: Gather bootstrap logs on failure
   tags:
     - csr_approval
@@ -226,7 +234,13 @@
       ansible.builtin.set_fact:
         csr_approver_gather_dest: "{{
           csr_approver_gather_failure_dest
-          | default(playbook_dir ~ '/bootstrap-failure-logs/' ~ cluster_name ~ '-' ~ (lookup('pipe', 'date +%s') | trim))
+          | default(
+              (install_dir | expanduser)
+              ~ '/bootstrap-failure-logs/'
+              ~ cluster_name
+              ~ '-'
+              ~ (lookup('pipe', 'date +%s') | trim)
+            )
         }}"
       tags:
         - csr_approval
@@ -564,7 +578,7 @@
       Bastion probes: under {{ csr_approver_install_dir }}/csr-fail/ (gather was disabled)
       {% endif %}
       Troubleshooting:
-      1) API NLB ({{ cluster_name }}-api) must expose **both** 6443 and 22623 on api-int, with cross-zone load balancing
+      1) API NLB ({{ cluster_name }}-api) must expose **6443**, **22623**, and **443** (OAuth express) on api-int, with cross-zone load balancing
       when targets span AZs (forge sets this on apply; fix in AWS if upgrading from a pre-merge stack).
       2) Verify foundry_nest_vpc_cidr is set (bootstrap SG allows 6443/22623 from Nest for bastion where applicable).
       3) Target health: {{ cluster_name }}-api-tg and {{ cluster_name }}-mcs-tg (MCS = bootstrap :22623); see aws-inspection-report.txt.
@@ -595,7 +609,9 @@
       # Pending CSRs: match Red Hat UPI pattern (CSRs with no .status), not jsonpath status.conditions==null.
       CSR_PENDING_TEMPLATE='{% raw %}{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}{% endraw %}'
 
-      # Run install-complete in background; while waiting, approve CSRs
+      # OAuth (only): API NLB :443 → oauth-tg → masters :6443 + Route53 oauth-openshift.apps (issues #23/#24). Console uses *.apps → ingress, not this path.
+      # No oc patch of Route oauth-openshift — cluster-authentication-operator remains source of truth.
+
       (
         $OPENSHIFT_INSTALL wait-for install-complete --dir="$INSTALL_DIR" --log-level=info
       ) &
@@ -637,6 +653,18 @@
       vars:
         aws_nodes_bastion_lb_diag_output_dir: "{{ csr_approver_install_dir }}/csr-fail/{{ cluster_name }}-{{ ansible_date_time.epoch }}"
       when: csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool
+
+    - name: Optional hints for console RouteHealth / ingress 503 (not OAuth API NLB)
+      ansible.builtin.debug:
+        msg:
+          - "Console uses *.apps → ingress NLB/ALB, not oauth-openshift.apps → API NLB (see AGENTS.md)."
+          - >-
+            AWS: describe-target-health for {{ cluster_name }}-ingress-443-tg
+            (pass --region for your account if the CLI default is wrong).
+          - "oc get co console ingress; oc describe route console -n openshift-console"
+          - "oc exec -n openshift-ingress deploy/router-default -- grep -i openshift-console /var/lib/haproxy/conf/haproxy.config"
+          - "HAProxy stats may be on router pod :1936 if exposed."
+      when: csr_approver_emit_console_ingress_hints_on_install_failure | default(false) | bool
 
     - name: Propagate install-complete failure
       ansible.builtin.fail:

@@ -71,6 +71,12 @@
   tags:
     - validation
 
+- name: Check oauth-openshift.apps HTTPS reachability (API NLB OAuth express lane)
+  ansible.builtin.include_tasks: oauth_apps_connectivity.yml
+  when: validation_oc_whoami.rc | default(1) == 0
+  tags:
+    - validation
+
 - name: Write validation report file
   ansible.builtin.copy:
     dest: "{{ validation_install_dir }}/{{ validation_report_filename }}"
@@ -101,6 +107,9 @@
       {% if validation_cluster_version.stderr | default('') | length > 0 %}
       stderr: {{ validation_cluster_version.stderr }}
       {% endif %}
+
+      --- oauth-openshift.apps HTTPS (API NLB :443 express lane) ---
+      {{ validation_oauth_connectivity_report_section | default('(not checked)') }}
   tags:
     - validation
 

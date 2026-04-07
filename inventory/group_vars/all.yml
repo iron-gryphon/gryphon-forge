@@ -34,7 +34,7 @@ foundry_ingress_certificate_arn: ""  # ACM cert ARN from foundry; when set, uses
 # --- Cluster Configuration ---
 cluster_name: "iron-vault-01"
 base_domain: "fsi.internal"
-ocp_version: "4.20"
+ocp_version: "4.21"
 
 # --- Node Counts ---
 master_count: 3
@@ -145,7 +145,7 @@ mirror_registry_extra_image_content_sources: []
 
 # --- Bastion OCP tools (download from mirror; override for air-gapped/internal mirror) ---
 # When bastion has internet, it downloads openshift-install and oc from Red Hat mirror.
-# Use latest-4.x for latest patch in minor version; or exact version e.g. 4.20.16
+# Use latest-4.x for latest patch in minor version; or exact version e.g. 4.21.3
 forge_ocp_mirror_channel: "latest-{{ ocp_version }}"
 forge_ocp_mirror_base_url: "https://mirror.openshift.com/pub/openshift-v4/clients/ocp"
 # get_url SSL verify (Linux/non-macOS controller only; macOS uses /usr/bin/curl for mirror downloads).

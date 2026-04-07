@@ -1,0 +1,46 @@
+---
+# Issues #23/#24: OAuth hostname reaches apiserver OAuth via API NLB :443 → masters :6443 (aws_nodes), not ingress router.
+
+- name: Skip OAuth connectivity check when disabled
+  ansible.builtin.set_fact:
+    validation_oauth_connectivity_report_section: "(check disabled via validation_check_oauth_apps_connectivity)"
+  when: not (validation_check_oauth_apps_connectivity | default(true) | bool)
+
+- name: Probe oauth-openshift.apps HTTPS (API NLB express lane)
+  when: validation_check_oauth_apps_connectivity | default(true) | bool
+  block:
+    - name: HTTPS GET oauth-openshift.apps host
+      ansible.builtin.uri:
+        url: "https://oauth-openshift.apps.{{ cluster_name }}.{{ base_domain }}/"
+        method: GET
+        validate_certs: "{{ validation_oauth_apps_tls_verify | default(false) }}"
+        follow_redirects: none
+        status_code: [200, 302, 303, 401, 403]
+        timeout: "{{ validation_oauth_apps_timeout_seconds | default(30) | int }}"
+      register: validation_oauth_apps_uri
+      failed_when: false
+
+    - name: Set OAuth connectivity report section from probe
+      ansible.builtin.set_fact:
+        validation_oauth_connectivity_report_section: "{{ _oauth_conn_rep }}"
+      vars:
+        _st: "{{ validation_oauth_apps_uri.status | default(-1) }}"
+        _ok: "{{ validation_oauth_apps_uri is succeeded }}"
+        _oauth_conn_rep: >-
+          {% if not _ok %}
+          FAILED msg={{ (validation_oauth_apps_uri.msg | default('')) | regex_replace('\n', ' ') | truncate(200) }}
+          {% elif _st | int in [200, 302, 303, 401, 403] %}
+          https://oauth-openshift.apps.{{ cluster_name }}.{{ base_domain }}/ HTTP {{ _st }} OK (TLS + response; API NLB :443 express lane)
+          {% else %}
+          HTTP {{ _st }} (unexpected status; check {{ cluster_name }}-oauth-tg and Route53 oauth-openshift.apps)
+          {% endif %}
+
+- name: Warn when OAuth apps HTTPS probe failed
+  ansible.builtin.debug:
+    msg: >-
+      oauth-openshift.apps HTTPS probe failed from this host. Confirm Route53 oauth-openshift.apps aliases the API NLB,
+      API NLB listener 443 forwards to {{ cluster_name }}-oauth-tg, and masters are registered on that target group.
+  when:
+    - validation_check_oauth_apps_connectivity | default(true) | bool
+    - validation_oauth_apps_uri is defined
+    - validation_oauth_apps_uri is not succeeded

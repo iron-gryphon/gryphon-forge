@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# List tags on a private OCI registry, pick the highest semver matching ocp minor (e.g. 4.20.*-x86_64).
+# List tags on a private OCI registry, pick the highest semver matching ocp minor (e.g. 4.21.*-x86_64).
 # Used when ignition_mirror_discover_release_tag is true. Requires bash, jq, curl; optional skopeo (preferred).
 #
 # Match this script to your mirror destination (path must be identical to oc-mirror / oc adm release mirror --to):
@@ -13,7 +13,7 @@
 # Usage:
 #   discover-mirror-release-tag.sh --registry HOST[:PORT] --repo PATH --minor X.Y --arch ARCH --pull-secret FILE [--scheme http|https] [--ca-file PEM]
 #
-# Note: The ocp-release payload uses tags like 4.20.z-x86_64 (not 4.20.z-x86_64-<component>). A repo may list only
+# Note: The ocp-release payload uses tags like 4.21.z-x86_64 (not 4.21.z-x86_64-<component>). A repo may list only
 # component tags under .../openshift/release/openshift/release; this script skips those and prefers
 # openshift/release/openshift-release-dev/ocp-release or openshift-release-dev/ocp-release when REPO is openshift/release.
 
@@ -94,13 +94,13 @@ command -v jq >/dev/null 2>&1 || {
 }
 
 MINOR_ESC="${MINOR//./\\.}"
-# Prefer arch-specific tags (e.g. 4.20.16-x86_64); fall back to -multi or bare patch (4.20.16).
+# Prefer arch-specific tags (e.g. 4.21.16-x86_64); fall back to -multi or bare patch (4.21.16).
 PATTERN_ARCH="^${MINOR_ESC}\\.[0-9]+-${ARCH}$"
 PATTERN_MULTI="^${MINOR_ESC}\\.[0-9]+-multi$"
 PATTERN_PLAIN="^${MINOR_ESC}\\.[0-9]+$"
 
-# True if the tag list includes an ocp-release payload tag (e.g. 4.20.2-x86_64), not only component tags
-# like 4.20.2-x86_64-openshift-apiserver (oc-mirror can put those under openshift/release/openshift/release).
+# True if the tag list includes an ocp-release payload tag (e.g. 4.21.2-x86_64), not only component tags
+# like 4.21.2-x86_64-openshift-apiserver (oc-mirror can put those under openshift/release/openshift/release).
 json_has_release_payload_tag() {
   local json="$1"
   local tags
@@ -114,7 +114,7 @@ json_has_release_payload_tag() {
   return 1
 }
 
-# Repo is usable if it has a strict release tag or only oc-mirror component tags (4.20.z-x86_64-name) so we can infer 4.20.z-x86_64.
+# Repo is usable if it has a strict release tag or only oc-mirror component tags (4.21.z-x86_64-name) so we can infer 4.21.z-x86_64.
 json_has_usable_release_tag() {
   local json="$1"
   json_has_release_payload_tag "${json}" && return 0
@@ -231,7 +231,7 @@ discover_via_curl() {
   local auth out url last_err try
   local -a try_paths=("${REPO}")
   if [[ "${REPO}" == "openshift/release" ]]; then
-    # Prefer ocp-release repos; openshift/release/openshift/release often holds only per-component tags (4.20.z-arch-name).
+    # Prefer ocp-release repos; openshift/release/openshift/release often holds only per-component tags (4.21.z-arch-name).
     try_paths+=(
       "openshift/release/openshift-release-dev/ocp-release"
       "openshift-release-dev/ocp-release"
@@ -330,7 +330,7 @@ elif BEST="$(echo "${TAGS}" | grep -E "${PATTERN_PLAIN}" || true)" && [[ -n "${B
   VER_LINE="$(echo "${BEST}" | sort -V | tail -1)"
   FULL_TAG="${VER_LINE}-${ARCH}"
 elif INFERRED="$(echo "${TAGS}" | grep -oE "^${MINOR_ESC}\\.[0-9]+-${ARCH}" 2>/dev/null | sort -V | tail -1)" && [[ -n "${INFERRED}" ]]; then
-  # e.g. tags are only 4.20.2-x86_64-openshift-apiserver — infer highest 4.20.z-x86_64 for the override.
+  # e.g. tags are only 4.21.2-x86_64-openshift-apiserver — infer highest 4.21.z-x86_64 for the override.
   FULL_TAG="${INFERRED}"
   echo "note: inferred release tag ${INFERRED} from component tag prefixes (verify mirror has image ...:${INFERRED})." >&2
 else

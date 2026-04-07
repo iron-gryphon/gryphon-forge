@@ -1,6 +1,8 @@
 ---
 # Internal NLB for OpenShift api-int: Kubernetes API (6443) + Machine Config Server (22623) on the same DNS name.
 # Masters fetch https://api-int:22623/config/master; api-int must expose :22623 on the same LB Route53 aliases to.
+# OAuth express lane (issues #23/#24): TCP listener :443 on this NLB forwards to masters :6443 (dedicated TG).
+# Route53 A record oauth-openshift.apps.<cluster>.<domain> aliases this NLB so passthrough Routes can keep targetPort 6443.
 # Ingress: ALB (HTTPS) when foundry provides ACM cert; else NLB (TCP passthrough)
 #
 # community.aws.elb_target_group defaults modify_targets=true; with no `targets` key it deregisters
@@ -43,6 +45,27 @@
     - aws_nodes
     - load_balancers
 
+- name: Create NLB target group for OAuth hostname express lane (masters :6443; NLB listener :443)
+  community.aws.elb_target_group:
+    name: "{{ cluster_name }}-oauth-tg"
+    protocol: TCP
+    port: 6443
+    vpc_id: "{{ foundry_vpc_id }}"
+    target_type: instance
+    modify_targets: false
+    state: present
+    health_check_protocol: tcp
+    health_check_port: traffic-port
+    health_check_interval: 15
+    health_check_timeout: 10
+    healthy_threshold_count: 2
+    unhealthy_threshold_count: 2
+    region: "{{ foundry_region }}"
+  register: aws_nodes_oauth_tg
+  tags:
+    - aws_nodes
+    - load_balancers
+
 # Same MCS target group cannot attach to two NLBs; drop legacy {{ cluster_name }}-mcs before api-int listener uses it here.
 - name: Remove legacy standalone MCS NLB if present (22623 is served on api-int / API NLB)
   community.aws.elb_network_lb:
@@ -53,7 +76,7 @@
     - aws_nodes
     - load_balancers
 
-- name: Create or update NLB for API (api + api-int DNS; listeners 6443 and 22623)
+- name: Create or update NLB for API (api + api-int DNS; listeners 6443, 22623, 443 OAuth express)
   community.aws.elb_network_lb:
     name: "{{ cluster_name }}-api"
     subnets: "{{ foundry_private_subnets }}"
@@ -72,6 +95,11 @@
         DefaultActions:
           - Type: forward
             TargetGroupArn: "{{ aws_nodes_mcs_tg.target_group_arn }}"
+      - Protocol: TCP
+        Port: 443
+        DefaultActions:
+          - Type: forward
+            TargetGroupArn: "{{ aws_nodes_oauth_tg.target_group_arn }}"
     state: present
     region: "{{ foundry_region }}"
   register: aws_nodes_api_nlb
@@ -133,6 +161,8 @@
     target_type: instance
     modify_targets: false
     state: present
+    health_check_protocol: tcp
+    health_check_port: traffic-port
     region: "{{ foundry_region }}"
   register: aws_nodes_ingress_443_tg
   when: foundry_ingress_certificate_arn | default('') | length == 0
@@ -149,6 +179,8 @@
     target_type: instance
     modify_targets: false
     state: present
+    health_check_protocol: tcp
+    health_check_port: traffic-port
     region: "{{ foundry_region }}"
   register: aws_nodes_ingress_nlb_80_tg
   when: foundry_ingress_certificate_arn | default('') | length == 0
@@ -266,6 +298,66 @@
         - aws_nodes
         - load_balancers
 
+- name: Build OAuth express-lane target IDs from EC2 master launch results (masters only)
+  ansible.builtin.set_fact:
+    aws_nodes_lb_oauth_target_ids: "{{ ((_oauth_mf | length > 0) | ternary(_oauth_mf, _oauth_mi)) | unique | list }}"
+  vars:
+    _oauth_mf: "{{ aws_nodes_master_launch.results | default([]) | map(attribute='instance_ids') | flatten | list }}"
+    _oauth_mi: >-
+      {{
+        aws_nodes_master_launch.results | default([])
+        | map(attribute='instances')
+        | flatten
+        | map(attribute='instance_id')
+        | list
+      }}
+  when:
+    - aws_nodes_master_launch is defined
+    - not (aws_nodes_master_launch.skipped | default(false))
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Set OAuth express-lane target IDs when API discovery already queried masters
+  ansible.builtin.set_fact:
+    aws_nodes_lb_oauth_target_ids: >-
+      {{ aws_nodes_lb_master_query.instances | default([]) | map(attribute='instance_id') | list }}
+  when:
+    - (aws_nodes_lb_oauth_target_ids | default([]) | length) == 0
+    - aws_nodes_lb_master_query is defined
+    - (aws_nodes_lb_master_query.instances | default([]) | length) > 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Discover master instance IDs for OAuth target group (when EC2 tasks were skipped)
+  when: (aws_nodes_lb_oauth_target_ids | default([]) | length) == 0
+  block:
+    - name: Wait for masters visible to EC2 API (OAuth express-lane TG)
+      amazon.aws.ec2_instance_info:
+        filters:
+          "tag:cluster": "{{ cluster_name }}"
+          "tag:role": "master"
+          "instance-state-name":
+            - pending
+            - running
+        region: "{{ foundry_region }}"
+      register: aws_nodes_lb_oauth_master_query
+      until: (aws_nodes_lb_oauth_master_query.instances | default([]) | length) >= (master_count | int)
+      retries: "{{ aws_nodes_lb_target_discovery_retries | int }}"
+      delay: "{{ aws_nodes_lb_target_discovery_delay | int }}"
+      tags:
+        - aws_nodes
+        - load_balancers
+
+    - name: Set OAuth target IDs from EC2 describe
+      ansible.builtin.set_fact:
+        aws_nodes_lb_oauth_target_ids: >-
+          {{ aws_nodes_lb_oauth_master_query.instances | default([]) | map(attribute='instance_id') | list }}
+      tags:
+        - aws_nodes
+        - load_balancers
+
 - name: Require instances for API/MCS target registration
   ansible.builtin.assert:
     that:
@@ -367,6 +459,80 @@
     state: present
     region: "{{ foundry_region }}"
   loop: "{{ aws_nodes_lb_api_target_ids | difference(aws_nodes_lb_mcs_already_registered | default([])) }}"
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Require master instances for OAuth express-lane target group
+  ansible.builtin.assert:
+    that:
+      - aws_nodes_lb_oauth_target_ids | default([]) | length > 0
+    fail_msg: >-
+      No masters to attach to {{ cluster_name }}-oauth-tg (API NLB :443 → :6443). Re-run with
+      --tags 'ec2,load_balancers' or confirm tag:cluster={{ cluster_name }}, role=master in {{ foundry_region }}.
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Describe OAuth express-lane target group for idempotent registration
+  community.aws.elb_target_group_info:
+    names:
+      - "{{ cluster_name }}-oauth-tg"
+    collect_targets_health: true
+    region: "{{ foundry_region }}"
+  register: aws_nodes_lb_oauth_tg_existing
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Set fact for instance IDs already registered on OAuth target group
+  ansible.builtin.set_fact:
+    aws_nodes_lb_oauth_already_registered: >-
+      {{
+        (
+          (aws_nodes_lb_oauth_tg_existing.target_groups | default([{}]))[0].targets_health_description | default([])
+        )
+        | map(attribute='target')
+        | map(attribute='id')
+        | list
+      }}
+  when: aws_nodes_lb_oauth_tg_existing.target_groups | default([]) | length > 0
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Default empty when OAuth target group has no registrations
+  ansible.builtin.set_fact:
+    aws_nodes_lb_oauth_already_registered: []
+  when: aws_nodes_lb_oauth_already_registered is not defined
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Register missing master instances on OAuth express-lane target group (6443)
+  community.aws.elb_target:
+    target_group_arn: "{{ aws_nodes_oauth_tg.target_group_arn }}"
+    target_id: "{{ item }}"
+    target_port: 6443
+    state: present
+    region: "{{ foundry_region }}"
+  loop: "{{ aws_nodes_lb_oauth_target_ids | difference(aws_nodes_lb_oauth_already_registered | default([])) }}"
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Prune invalid API/MCS NLB targets (workers, foreign cluster, operator-confirmed IDs; never masters)
+  ansible.builtin.include_tasks: load_balancers_api_mcs_prune.yml
+  when:
+    - aws_nodes_lb_prune_api_mcs_targets_enabled | default(true) | bool
+    - >-
+      (
+        (aws_nodes_lb_prune_api_mcs_worker_targets | default(true) | bool)
+        or (aws_nodes_lb_api_mcs_deregister_bootstrap | default(false) | bool)
+        or ((aws_nodes_lb_api_mcs_prune_extra_instance_ids | default([])) | length > 0)
+        or (aws_nodes_lb_api_mcs_prune_stale_non_master_targets | default(true) | bool)
+        or (aws_nodes_lb_prune_api_mcs_foreign_cluster_targets | default(true) | bool)
+      )
   tags:
     - aws_nodes
     - load_balancers

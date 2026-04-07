@@ -1,0 +1,163 @@
+---
+# Secret + APIServer named certificate for oauth-openshift.apps.<cluster>.<domain> on kube-apiserver (API NLB path).
+
+- name: Slurp OAuth apps API serving certificate for Secret manifest
+  ansible.builtin.slurp:
+    path: "{{ ignition_oauth_apps_tls_dir }}/tls.crt"
+  register: ignition_oauth_apps_tls_crt_slurp
+  tags:
+    - ignition
+
+- name: Slurp OAuth apps API serving private key for Secret manifest
+  ansible.builtin.slurp:
+    path: "{{ ignition_oauth_apps_tls_dir }}/tls.key"
+  register: ignition_oauth_apps_tls_key_slurp
+  tags:
+    - ignition
+
+- name: Write openshift-config Secret for kube-apiserver named certificate
+  ansible.builtin.copy:
+    dest: "{{ install_dir }}/manifests/99_forge-oauth-apps-api-serving-secret.yaml"
+    mode: "0600"
+    content: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ ignition_oauth_apps_api_serving_secret_name }}
+        namespace: openshift-config
+      type: kubernetes.io/tls
+      data:
+        tls.crt: {{ ignition_oauth_apps_tls_crt_slurp.content | trim }}
+        tls.key: {{ ignition_oauth_apps_tls_key_slurp.content | trim }}
+  tags:
+    - ignition
+
+- name: Find APIServer cluster manifests from openshift-install
+  ansible.builtin.find:
+    paths:
+      - "{{ install_dir }}/manifests"
+      - "{{ install_dir }}/openshift"
+    patterns:
+      - "*.yaml"
+      - "*.yml"
+    file_type: file
+  register: ignition_apiserver_manifest_find
+  tags:
+    - ignition
+
+- name: Resolve path to config.openshift.io APIServer cluster manifest
+  ansible.builtin.set_fact:
+    ignition_apiserver_manifest_path: "{{ item.path }}"
+  loop: "{{ ignition_apiserver_manifest_find.files | default([]) }}"
+  vars:
+    ignition_apiserver_manifest_doc: "{{ lookup('file', item.path) | from_yaml }}"
+  when:
+    - ignition_apiserver_manifest_path is not defined
+    - (ignition_apiserver_manifest_doc.kind | default('')) == 'APIServer'
+    - ((ignition_apiserver_manifest_doc.metadata | default({})).name | default('')) == 'cluster'
+  tags:
+    - ignition
+
+- name: Read APIServer cluster manifest for merge
+  when: ignition_apiserver_manifest_path is defined
+  ansible.builtin.slurp:
+    path: "{{ ignition_apiserver_manifest_path }}"
+  register: ignition_apiserver_existing_slurp
+  tags:
+    - ignition
+
+- name: Parse APIServer manifest for namedCertificates merge
+  when: ignition_apiserver_manifest_path is defined
+  ansible.builtin.set_fact:
+    ignition_apiserver_doc_in: "{{ ignition_apiserver_existing_slurp.content | b64decode | from_yaml }}"
+  tags:
+    - ignition
+
+- name: Build list of DNS names already covered by namedCertificates
+  when: ignition_apiserver_manifest_path is defined
+  ansible.builtin.set_fact:
+    ignition_apiserver_named_cert_all_names: >-
+      {{
+        (
+          (
+            (ignition_apiserver_doc_in.spec | default({})).servingCerts | default({})
+          ).namedCertificates | default([])
+        )
+        | selectattr('names', 'defined')
+        | map(attribute='names')
+        | list
+        | flatten
+      }}
+  tags:
+    - ignition
+
+- name: Merge OAuth apps hostname into existing APIServer manifest
+  when:
+    - ignition_apiserver_manifest_path is defined
+    - ignition_oauth_apps_api_hostname not in (ignition_apiserver_named_cert_all_names | default([]))
+  ansible.builtin.set_fact:
+    ignition_apiserver_named_new_entry:
+      names:
+        - "{{ ignition_oauth_apps_api_hostname }}"
+      servingCertificate:
+        name: "{{ ignition_oauth_apps_api_serving_secret_name }}"
+  tags:
+    - ignition
+
+- name: Compute merged APIServer spec (append named certificate)
+  when:
+    - ignition_apiserver_manifest_path is defined
+    - ignition_oauth_apps_api_hostname not in (ignition_apiserver_named_cert_all_names | default([]))
+  ansible.builtin.set_fact:
+    ignition_apiserver_spec_merged: >-
+      {{
+        ignition_apiserver_doc_in.spec | default({})
+        | combine({
+            'servingCerts': (
+              (ignition_apiserver_doc_in.spec | default({})).servingCerts | default({})
+              | combine({
+                  'namedCertificates': (
+                    (
+                      (
+                        (ignition_apiserver_doc_in.spec | default({})).servingCerts | default({})
+                      ).namedCertificates | default([])
+                    )
+                    + [ignition_apiserver_named_new_entry]
+                  )
+                }, recursive=true)
+            )
+          }, recursive=true)
+      }}
+  tags:
+    - ignition
+
+- name: Write merged APIServer cluster manifest
+  when:
+    - ignition_apiserver_manifest_path is defined
+    - ignition_oauth_apps_api_hostname not in (ignition_apiserver_named_cert_all_names | default([]))
+  ansible.builtin.copy:
+    dest: "{{ ignition_apiserver_manifest_path }}"
+    content: "{{ (ignition_apiserver_doc_in | combine({'spec': ignition_apiserver_spec_merged}, recursive=true)) | to_nice_yaml(indent=2) }}\n"
+    mode: "0644"
+  tags:
+    - ignition
+
+- name: Write standalone APIServer cluster manifest when installer did not emit one
+  when: ignition_apiserver_manifest_path is not defined
+  ansible.builtin.copy:
+    dest: "{{ install_dir }}/manifests/99_forge-apiserver-oauth-apps-named-cert.yaml"
+    mode: "0644"
+    content: |
+      apiVersion: config.openshift.io/v1
+      kind: APIServer
+      metadata:
+        name: cluster
+      spec:
+        servingCerts:
+          namedCertificates:
+            - names:
+                - {{ ignition_oauth_apps_api_hostname }}
+              servingCertificate:
+                name: {{ ignition_oauth_apps_api_serving_secret_name }}
+  tags:
+    - ignition

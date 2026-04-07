@@ -33,10 +33,10 @@
     source_image_id: "{{ rhcos_ami_source_id }}"
     source_region: "{{ rhcos_ami_source_region | default(foundry_region) }}"
     region: "{{ foundry_region }}"
-    name: "{{ cluster_name }}-rhcos-{{ ocp_version | default('4.20') }}"
-    description: "RHCOS for OpenShift {{ ocp_version | default('4.20') }} (copied for disconnected)"
+    name: "{{ cluster_name }}-rhcos-{{ ocp_version | default('4.21') }}"
+    description: "RHCOS for OpenShift {{ ocp_version | default('4.21') }} (copied for disconnected)"
     tags:
-      Name: "{{ cluster_name }}-rhcos-{{ ocp_version | default('4.20') }}"
+      Name: "{{ cluster_name }}-rhcos-{{ ocp_version | default('4.21') }}"
       cluster: "{{ cluster_name }}"
       purpose: "rhcos-upi"
     tag_equality: true

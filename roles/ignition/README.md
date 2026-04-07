@@ -30,9 +30,25 @@ After `openshift-install create manifests`, this role can patch `IngressControll
 |----------|--------|
 | `ignition_ingress_endpoint_publishing_hostnetwork` | When **true** and **`foundry_ingress_certificate_arn` is empty** (NLB path, no ACM/ALB), set `spec.endpointPublishingStrategy` to **`type: HostNetwork`** with `hostNetwork.httpPort` / `hostNetwork.httpsPort` (defaults **80** / **443**) so the router binds on the same ports the Forge NLB targets. **Disabled automatically** when an ACM cert ARN is set so the ALB/HTTPS path is unchanged. |
 | `ignition_ingress_hostnetwork_http_port` / `ignition_ingress_hostnetwork_https_port` | Override host ports when using HostNetwork (defaults match the CRD and Forge NLB target groups). |
+| `ignition_ingress_hostnetwork_router_replicas_merge` | When **true** and the same **HostNetwork + NLB** conditions apply, set **`spec.replicas`** on `IngressController/default` so router pod count matches worker capacity (Forge NLB target groups register every worker; the installer default of **2** routers can leave half the targets unhealthy). |
+| `ignition_ingress_hostnetwork_router_replicas` | Integer replica count for the default router when `ignition_ingress_hostnetwork_router_replicas_merge` is true. **Empty** (default): **`max(2, worker_count + gpu_worker_count)`** so you keep at least two for HA while scaling up. |
 | `ignition_ingress_default_dns_management_unmanaged` | When **true**, merge `loadBalancer.dnsManagementPolicy: Unmanaged` into the existing strategy—used on the **ALB** path (or if HostNetwork is off) so OpenShift does not fight Forge-owned **\*.apps** Route53 records. |
 
-Only `spec.endpointPublishingStrategy` is replaced or merged; the rest of `spec` is preserved. Re-running the patch is idempotent for a given variable set.
+`spec.endpointPublishingStrategy` is replaced or merged as above; when the NLB HostNetwork replica merge runs, **`spec.replicas`** is set on the same manifest. Other `spec` fields are preserved. Re-running the patch is idempotent for a given variable set.
+
+### OAuth hostname on the API NLB (kube-apiserver TLS / issues #23–#24)
+
+When **`oauth-openshift.apps.<cluster>.<domain>`** resolves to the **API NLB** (Forge default), clients see **kube-apiserver** TLS. The **cluster-authentication-operator** checks **`https://…/healthz`** with full certificate validation, so the serving cert must include that hostname in **SAN**. Forge does this with a **user-provided API serving certificate** pattern ([OpenShift API server certs](https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/security_and_compliance/user-provided-certificates-for-the-api-server)):
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ignition_oauth_apps_api_named_certificate` | Generate CA + leaf, add **`APIServer`** `namedCertificates` + Secret to **`manifests/`**, merge CA into **`install-config` `additionalTrustBundle`** (**`additionalTrustBundlePolicy: Always`** when this CA is present) | `true` |
+| `ignition_oauth_apps_api_serving_secret_name` | **`openshift-config`** Secret name referenced by **`APIServer`** | `forge-oauth-apps-api-serving` |
+| `ignition_oauth_apps_api_cert_validity_days` | OpenSSL validity for CA and leaf | `3650` |
+
+TLS artifacts: **`{{ install_dir }}/.forge/oauth-apps-api-tls/`** (removed if the OAuth hostname changes). Requires **`openssl`** on the Ansible controller. If an **`APIServer/cluster`** manifest already exists under **`manifests/`** or **`openshift/`** from the installer, Forge **merges** **`namedCertificates`** instead of duplicating the object.
+
+**`additionalTrustBundle` / foundry JSON:** Terraform sometimes emits PEM in JSON as a single line with **literal** `\n` (backslash + `n`) instead of real newlines. `openshift-install` then fails with **`invalid block`**. After merging mirror + OAuth PEM, the role runs **`files/normalize_trust_bundle_pem.py`** (via **`ansible.builtin.command`** and the controller’s Python) to collapse those escapes until stable, then writes **`install-config.yaml`**.
 
 ## Prerequisites
 
@@ -47,7 +63,7 @@ Only `spec.endpointPublishingStrategy` is replaced or merged; the rest of `spec`
 | `mirror_registry_url` | Private registry host for release payload | `""` |
 | `mirror_registry_use_image_digest_sources` | Use `imageDigestSources` + `ImageDigestMirrorSet` (vs legacy ICSP) | `true` |
 | `openshift_install_release_image_override` | Full image ref (`registry/repo@sha256:…` or `:tag`) | `""` |
-| `ignition_mirror_discover_release_tag` | If `true`, discover highest tag for `ocp_version` minor (e.g. `4.20.*-x86_64`) on the mirror; **do not** set `openshift_install_release_image_override` | `true` |
+| `ignition_mirror_discover_release_tag` | If `true`, discover highest tag for `ocp_version` minor (e.g. `4.21.*-x86_64`) on the mirror; **do not** set `openshift_install_release_image_override` | `true` |
 | `ignition_mirror_discover_release_arch` | Arch suffix in tag (e.g. `x86_64`) | `x86_64` |
 | `ignition_mirror_discover_delegate_to_bastion` | Run discovery from bastion when present (recommended; mirror often only reachable from VPC) | `true` |
 

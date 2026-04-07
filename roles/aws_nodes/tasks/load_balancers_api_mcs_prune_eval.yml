@@ -1,0 +1,94 @@
+---
+# Included with loop: item = instance ID registered on api-tg and/or mcs-tg.
+# Uses aws_nodes_lb_prune_ec2_describe from parent; accumulates aws_nodes_lb_api_mcs_ids_to_deregister.
+
+- name: Resolve EC2 record for NLB target {{ item }}
+  ansible.builtin.set_fact:
+    aws_nodes_lb_prune_this: >-
+      {{
+        (aws_nodes_lb_prune_ec2_describe.instances | default([])
+         | selectattr('instance_id', 'equalto', item) | list | first)
+        | default({}, true)
+      }}
+
+- name: Extract tags and state for {{ item }}
+  ansible.builtin.set_fact:
+    aws_nodes_lb_prune_role: "{{ (aws_nodes_lb_prune_this | default({})).tags.role | default('') }}"
+    aws_nodes_lb_prune_cluster: "{{ (aws_nodes_lb_prune_this | default({})).tags.cluster | default('') }}"
+    aws_nodes_lb_prune_state: "{{ (aws_nodes_lb_prune_this | default({})).state.name | default('') }}"
+    aws_nodes_lb_prune_has_instance: "{{ (aws_nodes_lb_prune_this | default({})).instance_id | default('') | length > 0 }}"
+
+- name: Warn when operator extra-prune list includes our control-plane node
+  ansible.builtin.debug:
+    msg: >-
+      Refusing to deregister {{ item }} from API/MCS target groups: EC2 tags show role=master for this cluster.
+      Remove this instance ID from aws_nodes_lb_api_mcs_prune_extra_instance_ids.
+  when:
+    - item in (aws_nodes_lb_api_mcs_prune_extra_instance_ids | default([]))
+    - aws_nodes_lb_prune_role == 'master'
+    - aws_nodes_lb_prune_cluster == cluster_name
+
+- name: Decide API/MCS deregistration for instance {{ item }}
+  ansible.builtin.set_fact:
+    aws_nodes_lb_prune_drop: >-
+      {{
+        (
+          not (
+            (aws_nodes_lb_prune_role == 'master')
+            and (aws_nodes_lb_prune_cluster == cluster_name)
+          )
+        )
+        and (
+          (
+            item in (aws_nodes_lb_api_mcs_prune_extra_instance_ids | default([]))
+            and not (
+              (aws_nodes_lb_prune_role == 'master')
+              and (aws_nodes_lb_prune_cluster == cluster_name)
+            )
+          )
+          or (
+            (not aws_nodes_lb_prune_has_instance | bool)
+            and (aws_nodes_lb_api_mcs_prune_stale_non_master_targets | default(true) | bool)
+          )
+          or (
+            (aws_nodes_lb_prune_has_instance | bool)
+            and (aws_nodes_lb_prune_cluster | default('') | length > 0)
+            and (aws_nodes_lb_prune_cluster != cluster_name)
+            and (aws_nodes_lb_prune_api_mcs_foreign_cluster_targets | default(true) | bool)
+          )
+          or (
+            (aws_nodes_lb_prune_role in ['worker', 'gpu-worker'])
+            and (aws_nodes_lb_prune_cluster == cluster_name)
+            and (aws_nodes_lb_prune_api_mcs_worker_targets | default(true) | bool)
+          )
+          or (
+            (aws_nodes_lb_prune_role == 'bootstrap')
+            and (aws_nodes_lb_prune_cluster == cluster_name)
+            and (aws_nodes_lb_api_mcs_deregister_bootstrap | default(false) | bool)
+          )
+          or (
+            (aws_nodes_lb_prune_role == 'bootstrap')
+            and (aws_nodes_lb_prune_cluster == cluster_name)
+            and (aws_nodes_lb_prune_state | default('') in ['terminated', 'shutting-down'])
+            and (aws_nodes_lb_api_mcs_prune_stale_non_master_targets | default(true) | bool)
+          )
+          or (
+            (aws_nodes_lb_prune_has_instance | bool)
+            and (aws_nodes_lb_prune_state | default('') not in ['running', 'pending'])
+            and (aws_nodes_lb_prune_role | default('') != 'bootstrap')
+            and (aws_nodes_lb_api_mcs_prune_stale_non_master_targets | default(true) | bool)
+            and not (
+              (aws_nodes_lb_prune_role == 'master')
+              and (aws_nodes_lb_prune_cluster == cluster_name)
+            )
+          )
+        )
+      }}
+
+- name: Accumulate API/MCS deregistration candidates
+  ansible.builtin.set_fact:
+    aws_nodes_lb_api_mcs_ids_to_deregister: >-
+      {{
+        (aws_nodes_lb_api_mcs_ids_to_deregister | default([]))
+        + ([item] if (aws_nodes_lb_prune_drop | bool) else [])
+      }}

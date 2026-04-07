@@ -28,22 +28,28 @@
   delegate_to: "{{ (groups['bastion'] | default([]) | length > 0) | ternary('bastion', inventory_hostname) }}"
   when: not (csr_approver_etcd_preflight_key_stat.stat.exists | default(false))
 
-- name: Describe bootstrap instance for etcd preflight
+# Only running instances: terminated/stopped bootstraps with the same tags break preflight if
+# ec2_instance_info returns them first (undefined order) — wrong IP → refused or blackhole.
+- name: Describe running bootstrap instance(s) for etcd preflight
   amazon.aws.ec2_instance_info:
     filters:
       "tag:cluster": "{{ cluster_name }}"
       "tag:role": "bootstrap"
+      "instance-state-name":
+        - running
     region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region)) }}"
   register: csr_approver_etcd_preflight_bootstrap
   run_once: true
   delegate_to: localhost
   connection: local
 
-- name: Describe master instances for etcd preflight
+- name: Describe running master instances for etcd preflight
   amazon.aws.ec2_instance_info:
     filters:
       "tag:cluster": "{{ cluster_name }}"
       "tag:role": "master"
+      "instance-state-name":
+        - running
     region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region)) }}"
   register: csr_approver_etcd_preflight_masters
   run_once: true
@@ -56,14 +62,27 @@
       - csr_approver_etcd_preflight_bootstrap.instances | default([]) | length > 0
       - csr_approver_etcd_preflight_masters.instances | default([]) | length > 0
     fail_msg: >-
-      etcd TCP preflight: need bootstrap and master instances tagged cluster={{ cluster_name }}.
-      Bootstrap count={{ csr_approver_etcd_preflight_bootstrap.instances | default([]) | length }},
-      masters count={{ csr_approver_etcd_preflight_masters.instances | default([]) | length }}.
+      etcd TCP preflight: need running bootstrap and master instances tagged cluster={{ cluster_name }}.
+      Running bootstrap count={{ csr_approver_etcd_preflight_bootstrap.instances | default([]) | length }},
+      running masters count={{ csr_approver_etcd_preflight_masters.instances | default([]) | length }}.
+
+- name: Choose bootstrap and master endpoints for etcd probes
+  ansible.builtin.set_fact:
+    # Newest launch wins when multiple running bootstraps exist (redeploy / leaked instance).
+    csr_approver_etcd_preflight_bootstrap_chosen: >-
+      {{
+        csr_approver_etcd_preflight_bootstrap.instances | sort(attribute='launch_time', reverse=true) | first
+      }}
+    csr_approver_etcd_preflight_master_chosen: >-
+      {{
+        csr_approver_etcd_preflight_masters.instances | sort(attribute='launch_time') | first
+      }}
+  run_once: true
 
 - name: Retry SSH to first master — open TCP to bootstrap :2379 and :2380
   vars:
-    _boot_ip: "{{ csr_approver_etcd_preflight_bootstrap.instances[0].private_ip_address }}"
-    _master_ip: "{{ csr_approver_etcd_preflight_masters.instances[0].private_ip_address }}"
+    _boot_ip: "{{ csr_approver_etcd_preflight_bootstrap_chosen.private_ip_address }}"
+    _master_ip: "{{ csr_approver_etcd_preflight_master_chosen.private_ip_address }}"
   ansible.builtin.command:
     argv:
       - ssh
@@ -95,8 +114,8 @@
 - name: Fail with etcd preflight troubleshooting when probes never succeeded
   ansible.builtin.fail:
     msg: >-
-      Master {{ csr_approver_etcd_preflight_masters.instances[0].private_ip_address | default('?') }} could not open
-      TCP to bootstrap etcd at {{ csr_approver_etcd_preflight_bootstrap.instances[0].private_ip_address | default('?') }}
+      Master {{ csr_approver_etcd_preflight_master_chosen.private_ip_address | default('?') }} could not open
+      TCP to bootstrap etcd at {{ csr_approver_etcd_preflight_bootstrap_chosen.private_ip_address | default('?') }}
       on 2379/2380 after {{ csr_approver_etcd_tcp_preflight_retries }} attempts ({{ csr_approver_etcd_tcp_preflight_delay }}s apart).
       Check: 1) Bootstrap and master ENIs include {{ cluster_name }}-bootstrap-sg / -master-sg and any gryphon-foundry vault_api/vault SGs;
       2) gryphon-foundry vault_api allows 2379-2380 from vault_vpc_cidr; 3) Vault subnets use default NACL (allow all) or allow etcd ports;

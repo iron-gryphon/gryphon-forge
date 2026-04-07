@@ -22,6 +22,16 @@ aws_nodes_openshift_infrastructure_id: ""
 aws_nodes_lb_target_discovery_retries: 40
 aws_nodes_lb_target_discovery_delay: 8
 
+# After registering bootstrap+masters on {{ cluster_name }}-api-tg / -mcs-tg, optionally deregister stale targets.
+# Masters for this cluster (tag cluster + role=master) are never removed. Confirm mystery instance IDs with the operator
+# (aws ec2 describe-instances) before adding to aws_nodes_lb_api_mcs_prune_extra_instance_ids.
+aws_nodes_lb_prune_api_mcs_targets_enabled: true
+aws_nodes_lb_prune_api_mcs_worker_targets: true
+aws_nodes_lb_api_mcs_deregister_bootstrap: false
+aws_nodes_lb_api_mcs_prune_extra_instance_ids: []
+aws_nodes_lb_api_mcs_prune_stale_non_master_targets: true
+aws_nodes_lb_prune_api_mcs_foreign_cluster_targets: true
+
 # When worker_count and gpu_worker_count are both 0, attach masters to ingress TGs (compact / router on control plane).
 aws_nodes_ingress_register_masters_when_no_workers: true
 

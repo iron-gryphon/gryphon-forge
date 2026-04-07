@@ -118,6 +118,7 @@
       loop:
         - "api.{{ cluster_name }}.{{ base_domain }}"
         - "api-int.{{ cluster_name }}.{{ base_domain }}"
+        - "oauth-openshift.apps.{{ cluster_name }}.{{ base_domain }}"
         - "*.apps.{{ cluster_name }}.{{ base_domain }}"
       ignore_errors: true
       tags:
@@ -181,7 +182,7 @@
         state: absent
         region: "{{ foundry_region }}"
       loop: >-
-        {{ [cluster_name + '-api-tg', cluster_name + '-mcs-tg', cluster_name + '-ingress-80-tg']
+        {{ [cluster_name + '-api-tg', cluster_name + '-mcs-tg', cluster_name + '-oauth-tg', cluster_name + '-ingress-80-tg']
         + ([cluster_name + '-ingress-443-tg'] if (foundry_ingress_certificate_arn | default('') | length == 0) else []) }}
       tags:
         - destroy

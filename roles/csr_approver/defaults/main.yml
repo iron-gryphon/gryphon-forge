@@ -24,7 +24,7 @@ csr_approver_api_tg_healthy_delay: 10
 csr_approver_gather_on_failure: true  # When bootstrap fails, gather logs and fetch to controller for review
 # When true, record bastion-diagnostics.txt (aws_nodes/bastion_lb_diagnostics.yml) on any CSR role failure path
 csr_approver_bastion_lb_diagnostics_on_failure: true
-# csr_approver_gather_failure_dest: override to set custom path; default is playbook_dir/bootstrap-failure-logs/<cluster>-<epoch>
+# csr_approver_gather_failure_dest: override to set custom path; default is install_dir/bootstrap-failure-logs/<cluster>-<epoch> (controller path)
 # When set and the file exists, openshift-install gather bootstrap gets --key (bastion: copied from ocp_ssh_private_key_path)
 csr_approver_ocp_ssh_identity_path: ""
 # When true and bootstrap gather runs, SSH (core) to the first master and run /dev/tcp probes to bootstrap :2379/:2380;
@@ -34,3 +34,7 @@ csr_approver_bootstrap_etcd_master_tcp_probe: false
 csr_approver_bootstrap_etcd_tcp_preflight: true
 csr_approver_etcd_tcp_preflight_retries: 36
 csr_approver_etcd_tcp_preflight_delay: 10
+# After wait-for bootstrap-complete, deregister bootstrap from {{ cluster_name }}-api-tg and -mcs-tg (AWS API on controller).
+csr_approver_deregister_bootstrap_from_api_mcs_after_complete: true
+# When true and wait-for install-complete fails: emit short console/ingress troubleshooting hints (oc/AWS/router; no secrets). See AGENTS.md (b) vs OAuth (a).
+csr_approver_emit_console_ingress_hints_on_install_failure: true
