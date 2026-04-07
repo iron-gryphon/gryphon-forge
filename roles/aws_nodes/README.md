@@ -91,6 +91,8 @@ Forge applies security groups **before** EC2 launch (`security_groups.yml` then 
 |---------|--------|-----------|-------|--------|
 | NLB health / in-VPC API | Vault VPC primary IPv4 CIDR (from EC2 `DescribeVpcs`, else `foundry_vault_vpc_cidr`) | `<cluster>-bootstrap-sg` | 6443, 22623 | Same CIDR as master API ingress; NLB has no SG |
 | SSH / API / MCS from Nest | `foundry_nest_vpc_cidr` (optional) | bootstrap | 22, 6443, 22623 | Bastion over peering |
+| Ingress (console, `*.apps`) from Nest | `foundry_nest_vpc_cidr` (optional) | worker; master when ingress targets masters only | 80, 443 | Internal NLB preserves client IP—Nest must reach node :80/:443, not only Vault CIDR |
+| HTTPS / HTTP to ingress ALB from Nest | `foundry_nest_vpc_cidr` (optional) | `<cluster>-ingress-alb-sg` | 443, 80 | When ACM ALB ingress (`foundry_ingress_certificate_arn`); same Nest reachability as NLB path |
 | SSH / API / MCS from bastion | `foundry_bastion_security_group_id` (optional) | bootstrap | 22, 6443, 22623 | |
 | RFC1918 SSH (legacy) | 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 | bootstrap | 22 | |
 | **etcd bootstrap join** | Vault VPC CIDR | bootstrap | **2379–2380** | Masters in private subnets reach bootstrap etcd |
