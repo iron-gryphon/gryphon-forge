@@ -35,7 +35,7 @@ This document helps AI agents understand and collaborate on the **gryphon-forge*
 
 ## Dependencies
 
-- **Tools:** `openshift-install`, `oc`, `ansible` (in `$PATH`)
+- **Tools:** `ansible` in `$PATH`; `openshift-install` and `oc` are placed under `install_dir/bin/` on the controller (mirror download) and `bastion_install_dir/bin/` on the bastion, unless overridden via `openshift_install_binary_path` / `openshift_client_binary_path`
 - **Ansible collections:** `amazon.aws`, `community.aws`, `kubernetes.core`, `community.general` (see `requirements.yml`)
 - **Secrets:** Pull secret at `~/.openshift/pull-secret` (or `PULL_SECRET_PATH`), SSH public key at `~/.ssh/id_rsa.pub`
 
@@ -66,6 +66,15 @@ ansible-playbook playbooks/destroy_cluster.yml --syntax-check
 ansible-lint
 ```
 
+**Optional — validate foundry JSON before deploy** (loads JSON locally; also calls **Route53** `GetHostedZone` to confirm the internal zone is associated with `vault_vpc_id` — requires AWS credentials):
+
+```bash
+ansible-playbook playbooks/preflight.yml -i inventory/hosts.yml \
+  -e foundry_preflight_path=../gryphon-foundry/foundry_output.json
+```
+
+In **gryphon-foundry**, after `terraform output -json > foundry_output.json`, run `./scripts/check-foundry-json-for-forge.sh foundry_output.json` (requires `jq`).
+
 **After making changes**, agents must:
 
 1. **Run validation** — Execute the commands above to ensure changes pass.
@@ -89,6 +98,7 @@ ansible-lint
 This project expects `foundry_output.json` (or Terraform remote state) with:
 
 - `vault_vpc_id`, `private_subnet_ids`, `bastion_security_group_id`, `internal_hosted_zone_id`, `region`
+- Optional: `ocp_base_domain`, `ocp_cluster_name`, `vault_vpc_cidr`, `vault_vpc_amazon_provided_dns`, `ocp_api_int_fqdn`, `create_ocp_private_zone`, `ocp_route53_zone_source` (see `deploy_cluster.yml` first play for normalization; Route53 outputs align with gryphon-foundry `outputs.tf`)
 
 **Preferred:** Pass via `-e @foundry_output.json` to avoid modifying `inventory/group_vars/all.yml`:
 
@@ -97,6 +107,52 @@ ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json
 ```
 
 Variables are overridden in the first play of `deploy_cluster.yml` from: 1) `include_vars` (if file at `foundry_output_path` exists), 2) `-e @foundry_output.json`, 3) `all.yml` defaults.
+
+## Troubleshooting: OAuth, console, and `install-complete`
+
+OAuth and the console are **different paths**. Do not assume the OAuth/API-NLB fix below fixes **console** HTTPS or **`console-openshift-console.apps`** probes.
+
+### (a) `oauth-openshift.apps` → API NLB `:443` (express lane) + API server TLS
+
+The **cluster-authentication-operator** often reconciles the `oauth-openshift` **Route** with `spec.port.targetPort` **`6443`** (pod port) while the **Service** publishes **`443` → 6443**. If that hostname resolves to the **default ingress** (wildcard `*.apps`), passthrough traffic hits the **router** on workers targeting pod port **6443**, where there is no matching backend — symptoms include stalled `install-complete` on **authentication**, OAuth failures, and TLS **unexpected EOF** ([issues #23](https://github.com/iron-gryphon/gryphon-forge/issues/23) and [#24](https://github.com/iron-gryphon/gryphon-forge/issues/24)). This path does **not** explain **`console-openshift-console.apps`** **503** from the **console** cluster operator; the console route uses **ingress**, described in **(b)**.
+
+**Forge’s fix for (a) (infrastructure; do not patch the OAuth Route):**
+
+1. **API NLB** (`<cluster>-api`) exposes TCP **443** forwarding to **`<cluster>-oauth-tg`**, which registers **control-plane** instances on **6443** (same kube-apiserver path as the API).
+2. **Route53** — explicit alias **`oauth-openshift.apps.<cluster>.<domain>`** → **API NLB** (more specific than `*.apps`, so OAuth DNS does not use the ingress NLB/ALB).
+3. **Control-plane security groups** already allow **6443** from the Vault VPC CIDR (NLB health checks and forwarded traffic).
+4. After **`wait-for bootstrap-complete`**, **csr_approver** deregisters the **bootstrap** instance from **`<cluster>-api-tg`** and **`<cluster>-mcs-tg`** (toggle: `csr_approver_deregister_bootstrap_from_api_mcs_after_complete`).
+5. **TLS** — traffic to **`oauth-openshift.apps…`** is still **kube-apiserver** on **6443**, so the server must present a certificate whose **SAN** includes that hostname. Forge’s **ignition** role adds **`APIServer`** `spec.servingCerts.namedCertificates` (plus a **`kubernetes.io/tls`** Secret in **`openshift-config`**) and merges the issuing CA into **`install-config` `additionalTrustBundle`** with **`additionalTrustBundlePolicy: Always`**. Material: **`{{ install_dir }}/.forge/oauth-apps-api-tls/`**. Toggle: **`ignition_oauth_apps_api_named_certificate`** (default **true**).
+
+**Check (a)**
+
+```bash
+dig +short oauth-openshift.apps.<cluster>.<domain>
+aws elbv2 describe-listeners --load-balancer-arn <api-nlb-arn> --query 'Listeners[?Port==`443`]'
+oc get route oauth-openshift -n openshift-authentication -o jsonpath='{.spec.port.targetPort}{"\n"}'
+openssl s_client -connect oauth-openshift.apps.<cluster>.<domain>:443 -servername oauth-openshift.apps.<cluster>.<domain> </dev/null 2>/dev/null | openssl x509 -noout -subject -ext subjectAltName
+oc get clusteroperator authentication
+```
+
+**Validation** probes `https://oauth-openshift.apps.<cluster>.<domain>/` and records the result in `validation-report.txt` (`validation_check_oauth_apps_connectivity`).
+
+**Workstations and browsers** still need to trust the OAuth serving chain for that URL (Forge’s auto-generated CA, or your replacement CA). The cluster’s **`additionalTrustBundle`** path above is for **nodes and cluster components**, not end-user browser trust stores.
+
+### (b) `console-openshift-console.apps` and other routes → `*.apps` → ingress NLB/ALB
+
+The **console** operator (and most application Routes) use hostnames under **`*.apps.<cluster>.<domain>`**, which Forge points at the **ingress** load balancer (NLB or ACM ALB), **not** the API NLB. **`openshift-install wait-for install-complete`** can fail with **console** **Degraded** / **RouteHealth** when the HTTPS probe to **`https://console-openshift-console.apps…/`** returns **503** even though **ingress** target groups show healthy workers — that points to **ingress/router → console Service/backend** (or in-cluster TLS/reencrypt), **VPC/peering reachability** from a bastion outside the Vault, or other cluster issues. The **(a)** OAuth/API-NLB and **`ignition_oauth_apps_api_named_certificate`** changes do **not** reroute or fix the console URL.
+
+**Useful checks (b)** — from a host that can reach Vault ingress (often a node or bastion in the right network): `oc get co console ingress`, `oc describe route console -n openshift-console`, ingress target group health in AWS for **`…-ingress-443-tg`**. For router backend detail: **`oc exec -n openshift-ingress deploy/router-default -- grep -i openshift-console /var/lib/haproxy/conf/haproxy.config`**; HAProxy stats may be on pod port **1936** if exposed.
+
+- If ingress target groups are healthy but the console route still returns **503**, and TLS or TCP from **`router-default`** toward the **console pod IP** (for example **`:8443`**) **never completes**, confirm EC2 security groups allow **UDP 6081** between nodes in the Vault VPC (**OVN-Kubernetes GENEVE**). Forge adds this on master and worker SGs; existing clusters need the **`ec2` / `security_groups`** stage re-run or a manual AWS rule until Ansible is replayed.
+
+### Disconnected clusters: `oc run` and debug images
+
+On **air-gapped** clusters, **`oc run`** / ephemeral pods that pull **public** images (for example **`curlimages/curl`**) often **hang or fail** (`ImagePullBackOff`, **Condition ready** timeout) because the registry is unreachable. Prefer a **mirrored** image from your release/mirror, **`oc debug node/…`** / **`oc debug pod/…`**, **`oc exec`** into **`openshift-ingress`** **`router-default`**, or tools shipped in an image already on the cluster (for example the release payload tools image from your mirror).
+
+### Optional Ansible hint after `install-complete` failure
+
+Set **`csr_approver_emit_console_ingress_hints_on_install_failure: true`** to print short **(b)**-oriented **`oc`** / AWS / router commands (no secrets) when **`wait-for install-complete`** fails in the **csr_approver** role.
 
 ## Common Tasks
 

@@ -11,14 +11,30 @@
 # --- Foundry Outputs (defaults; override via foundry_output.json or -e) ---
 foundry_vpc_id: ""
 foundry_private_subnets: []
+foundry_rhcos_ami_id: ""  # Option B: RHCOS AMI imported by foundry from mirror.openshift.com
+foundry_vault_vpc_cidr: "10.1.0.0/16"  # Vault VPC CIDR; used for install-config networking.machineNetwork
+foundry_nest_vpc_cidr: ""  # Nest VPC CIDR; when bastion is in Nest, allows API/MCS from bastion via peering
 foundry_bastion_security_group_id: ""
+# When set from gryphon-foundry outputs, aws_nodes attaches these to bootstrap and master ENIs (with cluster SGs).
+foundry_vault_api_security_group_id: ""
+foundry_vault_security_group_id: ""
 foundry_internal_hosted_zone_id: ""
+# From gryphon-foundry terraform output vault_vpc_amazon_provided_dns (cidrhost(vault_vpc_cidr, 2)); preferred for optional dig / bastion DNS checks
+foundry_vault_amazon_provided_dns: ""
+# From foundry ocp_api_int_fqdn; deploy_cluster asserts this matches api-int.<cluster>.<base_domain> when set
+foundry_ocp_api_int_fqdn: ""
+# From foundry create_ocp_private_zone / ocp_route53_zone_source (Route53 integration hints)
+foundry_create_ocp_private_zone: false
+foundry_ocp_route53_zone_source: ""
+foundry_base_domain: ""  # From foundry ocp_base_domain; when set, overrides base_domain for DNS zone alignment
+ocp_cluster_name: ""  # From foundry ocp_cluster_name; deploy_cluster maps to cluster_name when set
 foundry_region: ""
+foundry_ingress_certificate_arn: ""  # ACM cert ARN from foundry; when set, uses ALB with HTTPS
 
 # --- Cluster Configuration ---
 cluster_name: "iron-vault-01"
 base_domain: "fsi.internal"
-ocp_version: "4.15"
+ocp_version: "4.21"
 
 # --- Node Counts ---
 master_count: 3
@@ -43,12 +59,102 @@ pull_secret_path: "{{ lookup('env', 'PULL_SECRET_PATH') | default('~/.openshift/
 
 # --- SSH Key ---
 ssh_public_key_path: "{{ lookup('env', 'SSH_PUBLIC_KEY_PATH') | default('~/.ssh/id_rsa.pub', true) }}"
+# Private key for RHCOS user core (must match ssh_public_key_path / install-config sshKey).
+# Copied to bastion at bastion_install_dir/.ocp-ssh/identity when using a bastion. Override: OCP_SSH_PRIVATE_KEY_PATH.
+ocp_ssh_private_key_path: "{{ lookup('env', 'OCP_SSH_PRIVATE_KEY_PATH') | default(ssh_public_key_path | regex_replace('\\.pub$', ''), true) }}"
 
-# --- EC2 (required for provisioning) ---
-ec2_key_name: ""  # AWS key pair name - must exist in region
-rhcos_ami_id: ""  # RHCOS AMI - get from OpenShift release metadata for your region
+# --- Bastion (for API access; populated from foundry, no hardcoding) ---
+# When foundry provides bastion_public_ip/bastion_public_dns, install_dir is synced
+# to bastion and CSR approval/validation run there (reach cluster API in private VPC).
+# Use /var/tmp (not /tmp) - bastion /tmp is often tmpfs (~459MB) with insufficient space
+# for install dir + OCP tools (~800MB). Override via -e bastion_install_dir=... if needed.
+bastion_install_dir: "/var/tmp/gryphon-forge-install/{{ cluster_name }}"
+bastion_ssh_user: "ec2-user"
+bastion_ssh_private_key_path: "{{ lookup('env', 'BASTION_SSH_KEY_PATH') | default('~/.ssh/' + (ec2_key_name | default('id_rsa', true)) + '.pem', true) }}"
+
+# --- EC2 (required for provisioning; auto-generated when empty) ---
+ec2_key_name: ""  # AWS key pair name - auto-created as {{ cluster_name }}-forge-key when empty
+rhcos_ami_id: ""  # RHCOS AMI - auto-fetched, copied from source, or set manually
+# For disconnected/locked-down AWS (cannot use Red Hat AMI directly): copy from a source AMI
+# you have access to (shared with your account or from another region). Set rhcos_ami_source_id.
+rhcos_ami_source_id: ""  # When set, copy this AMI into your account (Option 1 for disconnected)
+rhcos_ami_source_region: ""  # Source region for copy; defaults to foundry_region when empty
 
 # --- API/Ingress Endpoints ---
 api_dns_name: "api.{{ cluster_name }}.{{ base_domain }}"
 api_int_dns_name: "api-int.{{ cluster_name }}.{{ base_domain }}"
 ingress_dns_name: "*.apps.{{ cluster_name }}.{{ base_domain }}"
+
+# --- Manifest patches (ignition role, after openshift-install create manifests) ---
+# Set DNS operator privateZone.id to foundry_internal_hosted_zone_id when reusing the foundry private zone (AWS private / UPI).
+ignition_patch_dns_aws_private_zone: true
+# When true: default IngressController uses Unmanaged LB DNS so Forge-owned Route53 records for *.apps are authoritative (OCP 4.15+).
+ignition_ingress_default_dns_management_unmanaged: true
+
+# --- Disconnected Install (mirror registry) ---
+# When set, install-config gets imageDigestSources (default) and an ImageDigestMirrorSet manifest—matching
+# `oc adm release mirror ... --print-mirror-instructions=idms`. Set mirror_registry_use_image_digest_sources: false
+# for legacy imageContentSources + ImageContentSourcePolicy.
+# Workflow: mirror release payload into a registry reachable from Vault (bastion or jump host). See Red Hat
+# "Mirroring images for a disconnected installation".
+mirror_registry_url: ""  # e.g. mirror.fsi.internal or mirror.fsi.internal:443 (no docker:// or https://)
+# Aligns install-config + cluster mirror CRs with oc adm release mirror / IDMS instructions (OCP 4.12+).
+mirror_registry_use_image_digest_sources: true
+# Must match the repository path on the mirror — the segment after docker://<host>/ in your mirror command; tag discovery calls GET /v2/<path>/tags/list.
+# Example oc-mirror v2 (mirror-to-registry): ... "docker://${MIRROR_REGISTRY_URL}/openshift/release" --v2  ->  openshift/release below
+# oc-mirror: ocp-release tags are often under .../openshift-release-dev/ocp-release; .../openshift/release may be component-only tags.
+mirror_registry_release_path: "openshift/release"
+# discover-mirror-release-tag.sh: GET ${scheme}://<mirror>/v2/... (set http only if the registry does not serve HTTPS).
+mirror_registry_discovery_scheme: "https"
+# PEM for the registry CA (or self-signed server cert). Required when the mirror is not in the system trust store.
+# The serving certificate MUST include Subject Alternative Names (DNS names clients use); CN-only certs fail on RHCOS (Go TLS).
+# PEM for the registry CA when not using foundry-emitted trust (OpenSSL/PKI; SANs must cover mirror hostname).
+mirror_registry_additional_trust_bundle: ""
+# Optional: docker config JSON ({"auths":{...}}) with credentials for mirror_registry_url.
+# Merged with pull_secret_path for tag discovery only if the mirror is not already in the Red Hat pull secret.
+mirror_registry_dockerconfig_extra_path: ""
+# REQUIRED when mirror_registry_url is set (enforced at ignition): exact payload on your mirror (digest recommended).
+# 1) Mirror the release for your openshift-install build (same patch level as forge_ocp_mirror_channel / downloaded binary):
+#    oc-mirror v2 (align destination path with mirror_registry_release_path), e.g.:
+#      oc mirror --authfile "$HOME/.openshift/pull-secret" -c ~/imageset-config.yml \
+#        --workspace "file://$HOME/oc-mirror-workspace" \
+#        "docker://<mirror_registry_url>/<mirror_registry_release_path>" --v2
+#    Or oc adm release mirror --registry-config ~/.openshift/pull-secret \
+#      --from=quay.io/openshift-release-dev/ocp-release:<VERSION>-x86_64 \
+#      --to=<mirror_registry_url>/<mirror_registry_release_path> \
+#      --print-mirror-instructions=idms
+#    Omit --apply-release-image-signature unless you have a kubeconfig (applies signatures to a cluster).
+#    Use the printed "Update image" as openshift_install_release_image_override (tag or digest).
+# 2) Set this variable to the mirrored release image reference, typically --to-release-image or digest form, e.g.:
+#    openshift_install_release_image_override: "mirror.fsi.internal/openshift/release@sha256:..."
+# 3) Confirm: openshift-install version default release image matches this payload.
+openshift_install_release_image_override: ""
+# When mirror + override are set: verify digest with oc image info before openshift-install (bastion if present, else controller).
+ignition_mirror_release_image_check_enabled: true
+# Default: {{ install_dir }}/mirror-release-image-check.txt on the controller; set to override path.
+ignition_mirror_release_image_check_result_path: ""
+# When true (default): list tags on mirror openshift/release, pick highest X.Y.Z-<arch> for ocp_version minor,
+# set openshift_install_release_image_override to registry/path:tag. Conflicts with manual override;
+# requires jq (+ curl or skopeo). Set false to pin openshift_install_release_image_override manually.
+ignition_mirror_discover_release_tag: true
+ignition_mirror_discover_release_arch: x86_64
+ignition_mirror_discover_delegate_to_bastion: true
+# Optional: extra mirror mappings from oc-mirror / release mirror output (operators, etc.).
+# Format: [ { source: 'registry.redhat.io/foo/bar', mirrors: ['mirror.fsi.internal/...'] }, ... ]
+mirror_registry_extra_image_content_sources: []
+
+# --- Bastion OCP tools (download from mirror; override for air-gapped/internal mirror) ---
+# When bastion has internet, it downloads openshift-install and oc from Red Hat mirror.
+# Use latest-4.x for latest patch in minor version; or exact version e.g. 4.21.3
+forge_ocp_mirror_channel: "latest-{{ ocp_version }}"
+forge_ocp_mirror_base_url: "https://mirror.openshift.com/pub/openshift-v4/clients/ocp"
+# get_url SSL verify (Linux/non-macOS controller only; macOS uses /usr/bin/curl for mirror downloads).
+# Set false only if mirror TLS fails (e.g. corporate PKI). Prefer fixing the controller CA store.
+forge_ocp_mirror_validate_certs: true
+# Same URLs used by the ignition role on the controller so install state matches bastion binaries.
+forge_ocp_installer_url_linux: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-install-linux.tar.gz"
+forge_ocp_client_url_linux: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-client-linux.tar.gz"
+# Controller: leave empty to auto-download openshift-install + oc into install_dir/bin (Linux/macOS).
+# Set both to absolute paths for air-gapped controllers or unsupported OS.
+openshift_install_binary_path: ""
+openshift_client_binary_path: ""

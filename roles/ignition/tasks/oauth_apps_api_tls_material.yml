@@ -1,0 +1,180 @@
+---
+# TLS material for kube-apiserver named certificate so https://oauth-openshift.apps.../healthz
+# presents a cert valid for that hostname (API NLB :443 → masters :6443). CA is merged into
+# install-config additionalTrustBundle with policy Always so in-cluster verifiers trust it.
+
+- name: Set OAuth apps hostname fact for API-serving cert
+  ansible.builtin.set_fact:
+    ignition_oauth_apps_api_hostname: "oauth-openshift.apps.{{ cluster_name }}.{{ base_domain }}"
+  tags:
+    - ignition
+    - config
+
+- name: Skip OAuth apps API TLS material when disabled
+  when: not (ignition_oauth_apps_api_named_certificate | default(true) | bool)
+  ansible.builtin.set_fact:
+    ignition_trust_bundle_oauth_pem: ""
+  tags:
+    - ignition
+    - config
+
+- name: Assert openssl is available for OAuth apps API TLS generation
+  when: ignition_oauth_apps_api_named_certificate | default(true) | bool
+  ansible.builtin.command:
+    cmd: openssl version
+  changed_when: false
+  tags:
+    - ignition
+    - config
+
+- name: Resolve OAuth apps API TLS directory and stamp
+  when: ignition_oauth_apps_api_named_certificate | default(true) | bool
+  ansible.builtin.set_fact:
+    ignition_oauth_apps_tls_dir: "{{ install_dir }}/.forge/oauth-apps-api-tls"
+    ignition_oauth_apps_tls_stamp: "{{ install_dir }}/.forge/oauth-apps-api-tls/oauth_hostname.stamp"
+  tags:
+    - ignition
+    - config
+
+- name: Read OAuth apps TLS hostname stamp when present
+  when: ignition_oauth_apps_api_named_certificate | default(true) | bool
+  ansible.builtin.slurp:
+    path: "{{ ignition_oauth_apps_tls_stamp }}"
+  register: ignition_oauth_apps_tls_stamp_slurp
+  failed_when: false
+  tags:
+    - ignition
+    - config
+
+- name: Remove stale OAuth apps API TLS material (cluster or domain changed)
+  when:
+    - ignition_oauth_apps_api_named_certificate | default(true) | bool
+    - >-
+      (not ignition_oauth_apps_tls_stamp_slurp.content | default('') | length > 0)
+      or ((ignition_oauth_apps_tls_stamp_slurp.content | default('') | b64decode | trim)
+          != ignition_oauth_apps_api_hostname)
+  ansible.builtin.file:
+    path: "{{ ignition_oauth_apps_tls_dir }}"
+    state: absent
+  tags:
+    - ignition
+    - config
+
+- name: Ensure OAuth apps API TLS directory exists
+  when: ignition_oauth_apps_api_named_certificate | default(true) | bool
+  ansible.builtin.file:
+    path: "{{ ignition_oauth_apps_tls_dir }}"
+    state: directory
+    mode: "0700"
+  tags:
+    - ignition
+    - config
+
+- name: Check whether OAuth apps API tls.crt already exists
+  when: ignition_oauth_apps_api_named_certificate | default(true) | bool
+  ansible.builtin.stat:
+    path: "{{ ignition_oauth_apps_tls_dir }}/tls.crt"
+  register: ignition_oauth_apps_tls_crt_stat
+  tags:
+    - ignition
+    - config
+
+- name: Generate OAuth apps API TLS key material and certificate
+  when:
+    - ignition_oauth_apps_api_named_certificate | default(true) | bool
+    - not ignition_oauth_apps_tls_crt_stat.stat.exists | default(false)
+  tags:
+    - ignition
+    - config
+  block:
+    - name: Stage OpenSSL config for OAuth apps API server certificate
+      ansible.builtin.template:
+        src: oauth_apps_api_openssl.cnf.j2
+        dest: "{{ ignition_oauth_apps_tls_dir }}/openssl.cnf"
+        mode: "0600"
+
+    - name: Create OAuth apps API TLS CA private key
+      ansible.builtin.command:
+        cmd: openssl genrsa -out ca.key 4096
+        chdir: "{{ ignition_oauth_apps_tls_dir }}"
+
+    - name: Self-sign OAuth apps API TLS CA certificate
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -x509 -new -nodes -key ca.key -sha256
+          -days {{ ignition_oauth_apps_api_cert_validity_days | int }}
+          -subj "/O=Gryphon Forge/CN=forge-oauth-apps-api-ca" -out ca.crt
+        chdir: "{{ ignition_oauth_apps_tls_dir }}"
+
+    - name: Create OAuth apps API server private key
+      ansible.builtin.command:
+        cmd: openssl genrsa -out tls.key 2048
+        chdir: "{{ ignition_oauth_apps_tls_dir }}"
+
+    - name: Create certificate signing request for OAuth apps API hostname
+      ansible.builtin.command:
+        cmd: openssl req -new -key tls.key -out server.csr -config openssl.cnf
+        chdir: "{{ ignition_oauth_apps_tls_dir }}"
+
+    - name: Sign OAuth apps API server certificate with forge CA
+      ansible.builtin.command:
+        cmd: >-
+          openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial
+          -out tls.crt -days {{ ignition_oauth_apps_api_cert_validity_days | int }} -sha256
+          -extensions v3_req -extfile openssl.cnf
+        chdir: "{{ ignition_oauth_apps_tls_dir }}"
+
+    - name: Record OAuth hostname stamp for TLS material idempotency
+      ansible.builtin.copy:
+        dest: "{{ ignition_oauth_apps_tls_stamp }}"
+        content: "{{ ignition_oauth_apps_api_hostname }}"
+        mode: "0600"
+
+    - name: Remove ephemeral CSR and serial from OAuth apps API TLS directory
+      ansible.builtin.file:
+        path: "{{ ignition_oauth_apps_tls_dir }}/{{ item }}"
+        state: absent
+      loop:
+        - server.csr
+        - ca.srl
+
+- name: Ensure OpenSSL config matches current OAuth hostname when tls.crt present
+  when:
+    - ignition_oauth_apps_api_named_certificate | default(true) | bool
+    - ignition_oauth_apps_tls_crt_stat.stat.exists | default(false)
+  ansible.builtin.template:
+    src: oauth_apps_api_openssl.cnf.j2
+    dest: "{{ ignition_oauth_apps_tls_dir }}/openssl.cnf"
+    mode: "0600"
+  tags:
+    - ignition
+    - config
+
+- name: Ensure OAuth hostname stamp when tls.crt present
+  when:
+    - ignition_oauth_apps_api_named_certificate | default(true) | bool
+    - ignition_oauth_apps_tls_crt_stat.stat.exists | default(false)
+  ansible.builtin.copy:
+    dest: "{{ ignition_oauth_apps_tls_stamp }}"
+    content: "{{ ignition_oauth_apps_api_hostname }}"
+    mode: "0600"
+  tags:
+    - ignition
+    - config
+
+- name: Slurp OAuth apps API CA for install-config additionalTrustBundle
+  when: ignition_oauth_apps_api_named_certificate | default(true) | bool
+  ansible.builtin.slurp:
+    path: "{{ ignition_oauth_apps_tls_dir }}/ca.crt"
+  register: ignition_oauth_apps_ca_slurp
+  tags:
+    - ignition
+    - config
+
+- name: Set OAuth trust bundle fact for install-config
+  when: ignition_oauth_apps_api_named_certificate | default(true) | bool
+  ansible.builtin.set_fact:
+    ignition_trust_bundle_oauth_pem: "{{ ignition_oauth_apps_ca_slurp.content | b64decode | trim }}"
+  tags:
+    - ignition
+    - config

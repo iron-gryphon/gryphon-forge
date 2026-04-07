@@ -1,0 +1,64 @@
+---
+# Fail fast when inventory expects workers but EC2 does not show them (e.g. --tags csr_approval without ec2).
+
+- name: Describe worker EC2 instances (tag role worker)
+  amazon.aws.ec2_instance_info:
+    filters:
+      "tag:cluster": "{{ cluster_name }}"
+      "tag:role": "worker"
+      "instance-state-name":
+        - pending
+        - running
+    region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region)) }}"
+  register: csr_approver_ec2_worker_instances
+  delegate_to: localhost
+  connection: local
+  when: (worker_count | default(0) | int) > 0
+  tags:
+    - csr_approval
+
+- name: Require worker EC2 count to match worker_count
+  ansible.builtin.assert:
+    that:
+      - (csr_approver_ec2_worker_instances.instances | default([]) | length) >= (worker_count | int)
+    fail_msg: >-
+      Inventory worker_count is {{ worker_count }} but EC2 shows only
+      {{ csr_approver_ec2_worker_instances.instances | default([]) | length }} instance(s) with tag:cluster={{ cluster_name }},
+      tag:role=worker (pending/running). Workers were not provisioned or this play was run without the ec2 stage.
+      Run: ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json --tags ec2,load_balancers
+      (or a full deploy) before csr_approval.
+  when:
+    - (worker_count | default(0) | int) > 0
+    - csr_approver_ec2_worker_instances is defined
+  tags:
+    - csr_approval
+
+- name: Describe GPU worker EC2 instances (tag role gpu-worker)
+  amazon.aws.ec2_instance_info:
+    filters:
+      "tag:cluster": "{{ cluster_name }}"
+      "tag:role": "gpu-worker"
+      "instance-state-name":
+        - pending
+        - running
+    region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region)) }}"
+  register: csr_approver_ec2_gpu_worker_instances
+  delegate_to: localhost
+  connection: local
+  when: (gpu_worker_count | default(0) | int) > 0
+  tags:
+    - csr_approval
+
+- name: Require GPU worker EC2 count to match gpu_worker_count
+  ansible.builtin.assert:
+    that:
+      - (csr_approver_ec2_gpu_worker_instances.instances | default([]) | length) >= (gpu_worker_count | int)
+    fail_msg: >-
+      Inventory gpu_worker_count is {{ gpu_worker_count }} but EC2 shows only
+      {{ csr_approver_ec2_gpu_worker_instances.instances | default([]) | length }} instance(s) with tag:cluster={{ cluster_name }},
+      tag:role=gpu-worker (pending/running). Run with --tags ec2,load_balancers or full deploy before csr_approval.
+  when:
+    - (gpu_worker_count | default(0) | int) > 0
+    - csr_approver_ec2_gpu_worker_instances is defined
+  tags:
+    - csr_approval

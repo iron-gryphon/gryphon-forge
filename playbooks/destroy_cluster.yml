@@ -8,14 +8,14 @@
   tasks:
     - name: Check if foundry output exists
       ansible.builtin.stat:
-        path: "{{ foundry_output_path | expand_user }}"
+        path: "{{ foundry_output_path | expanduser }}"
       register: foundry_output_stat
       tags:
         - always
 
     - name: Load foundry_output.json if present
       ansible.builtin.include_vars:
-        file: "{{ foundry_output_path | expand_user }}"
+        file: "{{ foundry_output_path | expanduser }}"
         name: foundry
       when: foundry_output_stat.stat.exists | default(false)
       tags:
@@ -25,17 +25,64 @@
     - name: Override with foundry outputs
       ansible.builtin.set_fact:
         foundry_vpc_id: >-
-          {{ (foundry | default({})).vault_vpc_id
-          | default(vault_vpc_id | default(foundry_vpc_id)) }}
+          {{ (((foundry | default({})).vault_vpc_id | default(vault_vpc_id)) | default({}))['value']
+          | default((foundry | default({})).vault_vpc_id | default(vault_vpc_id | default(foundry_vpc_id))) }}
         foundry_private_subnets: >-
-          {{ (foundry | default({})).private_subnet_ids
-          | default(private_subnet_ids | default(foundry_private_subnets)) }}
+          {{ (((foundry | default({})).vault_private_subnet_ids
+          | default((foundry | default({})).ocp_upi_subnet_ids)
+          | default(private_subnet_ids)) | default({}))['value']
+          | default((foundry | default({})).vault_private_subnet_ids
+          | default((foundry | default({})).ocp_upi_subnet_ids)
+          | default(private_subnet_ids | default(foundry_private_subnets))) }}
         foundry_internal_hosted_zone_id: >-
-          {{ (foundry | default({})).internal_hosted_zone_id
-          | default(internal_hosted_zone_id | default(foundry_internal_hosted_zone_id)) }}
+          {{ (((foundry | default({})).internal_hosted_zone_id
+          | default(internal_hosted_zone_id)) | default({}))['value']
+          | default((foundry | default({})).internal_hosted_zone_id
+          | default(internal_hosted_zone_id | default(foundry_internal_hosted_zone_id))) }}
         foundry_region: >-
-          {{ (foundry | default({})).region
-          | default(region | default(foundry_region)) }}
+          {{ (((foundry | default({})).region | default(region)) | default({}))['value']
+          | default((foundry | default({})).region | default(region | default(foundry_region))) }}
+        foundry_ingress_certificate_arn: >-
+          {{ (((foundry | default({})).ingress_certificate_arn | default({})) | default({}))['value']
+          | default((foundry | default({})).ingress_certificate_arn | default('')) }}
+        foundry_base_domain: >-
+          {{ (((foundry | default({})).ocp_base_domain | default(ocp_base_domain)) | default({}))['value']
+          | default((foundry | default({})).ocp_base_domain | default(ocp_base_domain) | default('')) }}
+        foundry_cluster_name: >-
+          {{ (((foundry | default({})).ocp_cluster_name | default(ocp_cluster_name)) | default({}))['value']
+          | default((foundry | default({})).ocp_cluster_name | default(ocp_cluster_name) | default('')) }}
+      tags:
+        - always
+
+    - name: Normalize ocp_base_domain when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_base_domain: "{{ foundry_base_domain['value'] }}"
+      when:
+        - foundry_base_domain is mapping
+        - (foundry_base_domain | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Normalize ocp_cluster_name when in Terraform output format
+      ansible.builtin.set_fact:
+        foundry_cluster_name: "{{ foundry_cluster_name['value'] }}"
+      when:
+        - foundry_cluster_name is mapping
+        - (foundry_cluster_name | default({})).get('value') is defined
+      tags:
+        - always
+
+    - name: Override base_domain from foundry ocp_base_domain
+      ansible.builtin.set_fact:
+        base_domain: "{{ foundry_base_domain }}"
+      when: foundry_base_domain | default('') | length > 0
+      tags:
+        - always
+
+    - name: Override cluster_name from foundry ocp_cluster_name
+      ansible.builtin.set_fact:
+        cluster_name: "{{ foundry_cluster_name }}"
+      when: foundry_cluster_name | default('') | length > 0
       tags:
         - always
 
@@ -52,6 +99,7 @@
       tags:
         - destroy
 
+    # deploy_cluster.yml does not remove bootstrap until openshift-install wait-for bootstrap-complete (csr_approver).
     - name: Terminate EC2 instances
       amazon.aws.ec2_instance:
         instance_ids: "{{ ec2_instances.instances | map(attribute='instance_id') | list }}"
@@ -60,16 +108,37 @@
       tags:
         - destroy
 
-    - name: Delete Route53 records
+    - name: Get Route53 record (for correct delete of alias records)
       amazon.aws.route53:
         hosted_zone_id: "{{ foundry_internal_hosted_zone_id }}"
         record: "{{ item }}"
         type: A
-        state: absent
+        state: get
+      register: destroy_route53_get
       loop:
         - "api.{{ cluster_name }}.{{ base_domain }}"
         - "api-int.{{ cluster_name }}.{{ base_domain }}"
+        - "oauth-openshift.apps.{{ cluster_name }}.{{ base_domain }}"
         - "*.apps.{{ cluster_name }}.{{ base_domain }}"
+      ignore_errors: true
+      tags:
+        - destroy
+
+    - name: Delete Route53 alias records
+      amazon.aws.route53:
+        hosted_zone_id: "{{ foundry_internal_hosted_zone_id }}"
+        record: "{{ item.item }}"
+        type: A
+        state: absent
+        alias: true
+        value: "{{ [item.set.value] }}"
+        alias_hosted_zone_id: "{{ item.set.alias_hosted_zone_id }}"
+      loop: "{{ destroy_route53_get.results }}"
+      when:
+        - not (item.failed | default(false))
+        - item.set is defined
+        - item.set is not none
+        - (item.set.alias | default(false)) | bool
       tags:
         - destroy
 
@@ -77,13 +146,15 @@
       community.aws.elb_network_lb:
         name: "{{ cluster_name }}-api"
         state: absent
+        region: "{{ foundry_region }}"
       tags:
         - destroy
 
-    - name: Delete MCS NLB
+    - name: Delete legacy MCS NLB (no longer created; 22623 is on the API NLB)
       community.aws.elb_network_lb:
         name: "{{ cluster_name }}-mcs"
         state: absent
+        region: "{{ foundry_region }}"
       tags:
         - destroy
 
@@ -91,6 +162,17 @@
       amazon.aws.elb_application_lb:
         name: "{{ cluster_name }}-ingress"
         state: absent
+        region: "{{ foundry_region }}"
+      when: foundry_ingress_certificate_arn | default('') | length > 0
+      tags:
+        - destroy
+
+    - name: Delete Ingress NLB
+      community.aws.elb_network_lb:
+        name: "{{ cluster_name }}-ingress"
+        state: absent
+        region: "{{ foundry_region }}"
+      when: foundry_ingress_certificate_arn | default('') | length == 0
       tags:
         - destroy
 
@@ -98,11 +180,10 @@
       community.aws.elb_target_group:
         name: "{{ item }}"
         state: absent
-      loop:
-        - "{{ cluster_name }}-api-tg"
-        - "{{ cluster_name }}-mcs-tg"
-        - "{{ cluster_name }}-ingress-443-tg"
-        - "{{ cluster_name }}-ingress-80-tg"
+        region: "{{ foundry_region }}"
+      loop: >-
+        {{ [cluster_name + '-api-tg', cluster_name + '-mcs-tg', cluster_name + '-oauth-tg', cluster_name + '-ingress-80-tg']
+        + ([cluster_name + '-ingress-443-tg'] if (foundry_ingress_certificate_arn | default('') | length == 0) else []) }}
       tags:
         - destroy
 
@@ -110,10 +191,56 @@
       amazon.aws.ec2_security_group:
         name: "{{ item }}"
         state: absent
-      loop:
-        - "{{ cluster_name }}-bootstrap-sg"
-        - "{{ cluster_name }}-master-sg"
-        - "{{ cluster_name }}-worker-sg"
+      loop: >-
+        {{ [cluster_name + '-bootstrap-sg', cluster_name + '-master-sg', cluster_name + '-worker-sg']
+        + ([cluster_name + '-ingress-alb-sg'] if (foundry_ingress_certificate_arn | default('') | length > 0) else []) }}
+      tags:
+        - destroy
+
+    - name: Get AWS account ID for ignition bucket
+      amazon.aws.aws_caller_info:
+      register: destroy_caller_info
+      tags:
+        - destroy
+
+    - name: Empty and delete ignition S3 bucket
+      tags:
+        - destroy
+      block:
+        - name: Delete ignition objects from S3 bucket
+          amazon.aws.s3_object:
+            bucket: "{{ (cluster_name | replace('_', '-') | lower) }}-ignition-{{ destroy_caller_info.account }}"
+            object: "{{ item }}"
+            mode: delobj
+          loop:
+            - bootstrap.ign
+            - master.ign
+            - worker.ign
+          ignore_errors: true
+          tags:
+            - destroy
+
+        - name: Delete ignition S3 bucket
+          amazon.aws.s3_bucket:
+            name: "{{ (cluster_name | replace('_', '-') | lower) }}-ignition-{{ destroy_caller_info.account }}"
+            state: absent
+          tags:
+            - destroy
+
+    - name: Delete ignition IAM instance profile
+      amazon.aws.iam_instance_profile:
+        name: "{{ cluster_name }}-ignition-reader"
+        state: absent
+      ignore_errors: true
+      tags:
+        - destroy
+
+    - name: Delete ignition IAM role
+      amazon.aws.iam_role:
+        name: "{{ cluster_name }}-ignition-reader"
+        delete_instance_profile: false
+        state: absent
+      ignore_errors: true
       tags:
         - destroy
 

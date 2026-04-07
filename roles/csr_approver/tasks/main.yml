@@ -2,52 +2,677 @@
 # CSR Approver - Watch and approve Kubelet CSRs during bootstrap
 # Run after bootstrap node is up; approves CSRs so masters/workers can join
 
+# --- Connectivity validation (fail fast before long bootstrap wait) ---
+# Private zone + api-int alias can take time to answer from bastion VPC DNS; retry before failing.
+- name: Wait for API DNS resolution
+  tags:
+    - csr_approval
+  block:
+    - name: Query api-int until resolvable
+      ansible.builtin.command:
+        argv:
+          - getent
+          - hosts
+          - "{{ api_int_dns_name }}"
+      register: csr_approver_dns_check
+      until: csr_approver_dns_check.rc == 0
+      retries: "{{ csr_approver_dns_resolution_retries | int }}"
+      delay: "{{ csr_approver_dns_resolution_delay | int }}"
+      changed_when: false
+
+  rescue:
+    - name: Capture bastion LB diagnostics after CSR DNS failure
+      ansible.builtin.include_role:
+        name: aws_nodes
+        tasks_from: bastion_lb_diagnostics.yml
+      vars:
+        aws_nodes_bastion_lb_diag_output_dir: "{{ csr_approver_install_dir }}/csr-fail/{{ cluster_name }}-{{ ansible_date_time.epoch }}"
+      when: csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool
+
+    - name: Fail with DNS troubleshooting hint
+      ansible.builtin.fail:
+        msg: >-
+          DNS lookup failed for {{ api_int_dns_name }} after {{ csr_approver_dns_resolution_retries }} attempts
+          ({{ csr_approver_dns_resolution_delay }}s between retries).
+          Ensure the api-int record exists in the private zone, the zone is associated with this host's VPC,
+          and the instance uses VPC DNS (e.g. AmazonProvidedDNS).
+          Last result: rc={{ csr_approver_dns_check.rc | default('n/a') }},
+          stderr={{ csr_approver_dns_check.stderr | default('') | trim }}.
+          {% if csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool %}
+          Bastion diagnostics (if applicable): see bastion-diagnostics.txt under
+          {{ csr_approver_install_dir }}/csr-fail/
+          {% endif %}
+
+- name: Preflight — EC2 workers exist when worker_count or gpu_worker_count is positive
+  ansible.builtin.include_tasks: expected_workers_ec2_preflight.yml
+  when: not (csr_approver_skip_expected_workers_ec2_preflight | default(false) | bool)
+  tags:
+    - csr_approval
+
+# Fail in seconds when the NLB has no targets (otherwise bastion wait_for burns csr_approver_connectivity_timeout).
+- name: Preflight — API target group has registered targets
+  tags:
+    - csr_approval
+  when: not (csr_approver_skip_api_tg_preflight | default(false) | bool)
+  block:
+    - name: Describe API target group from controller
+      community.aws.elb_target_group_info:
+        names:
+          - "{{ cluster_name }}-api-tg"
+        collect_targets_health: true
+        region: "{{ hostvars['localhost']['foundry_region'] | default(foundry_region | default(region)) }}"
+      delegate_to: localhost
+      connection: local
+      run_once: true
+      register: csr_approver_tg_preflight
+
+    - name: Require API target group to exist with at least one registered target
+      ansible.builtin.assert:
+        that:
+          - csr_approver_tg_preflight.target_groups | default([]) | length > 0
+          - (csr_approver_tg_preflight.target_groups[0].targets_health_description | default([]) | length) > 0
+        fail_msg: >-
+          {{ cluster_name }}-api-tg has no registered targets; the API NLB cannot reach :6443 from the bastion.
+          Re-run: ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json
+          with --tags load_balancers (nodes already running) or --tags ec2,load_balancers (launch or fix tags, then attach).
+          In AWS: Target groups → {{ cluster_name }}-api-tg; instances need tag:cluster={{ cluster_name }}, tag:role bootstrap or master.
+
+    - name: Wait until at least one API target is healthy (NLB does not forward to unhealthy targets)
+      block:
+        # Loop + include_tasks avoids Ansible until/retry "Unknown error" and bogus failed=true on success paths.
+        - name: Reset API target group poll state
+          ansible.builtin.set_fact:
+            csr_approver_api_healthy_done: false
+            csr_approver_api_tg_poll_retries: "{{ [csr_approver_api_tg_healthy_retries | int, 1] | max }}"
+
+        - name: Poll API target group until healthy
+          ansible.builtin.include_tasks: poll_api_tg_health.yml
+          loop: "{{ range(1, (csr_approver_api_tg_poll_retries | int) + 1) | list }}"
+          loop_control:
+            loop_var: csr_approver_api_poll_attempt
+          when: not csr_approver_api_healthy_done | bool
+
+        - name: Fail when API target group never became healthy
+          vars:
+            _api_th: >-
+              {{
+                (
+                  csr_approver_tg_health_wait.target_groups | default([])
+                  | first | default({})
+                ).targets_health_description | default([])
+              }}
+            _healthy_n: >-
+              {{
+                _api_th
+                | selectattr('target_health', 'defined')
+                | map(attribute='target_health')
+                | map(attribute='state')
+                | select('in', ['healthy'])
+                | list | length
+              }}
+          ansible.builtin.fail:
+            msg: >-
+              {{ cluster_name }}-api-tg: no healthy target after
+              {{ csr_approver_api_tg_healthy_retries | int }} polls
+              ({{ csr_approver_api_tg_healthy_delay | int }}s apart). The NLB only forwards to healthy targets.
+              {% if _api_th | length == 0 %}
+
+              DescribeTargetHealth returned **no registered targets** (empty target group). Re-attach bootstrap and masters:
+              ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json --tags ec2,load_balancers
+              {% else %}
+
+              Targets (none healthy — kube-apiserver must accept TCP :6443; bootstrap is usually first):
+              {% for th in _api_th %}
+              - {{ th.target.id | default('?') }}:{{ th.target.port | default(6443) }}
+                {{ th.target_health.state | default('unknown') }}
+                {% if th.target_health.reason is defined %}({{ th.target_health.reason }}){% endif %}
+
+              {% endfor %}
+              {% endif %}
+
+              Next: EC2 → Target groups → {{ cluster_name }}-api-tg; bootstrap console/SSM; openshift-install gather bootstrap;
+              foundry_vault_vpc_cidr must match Terraform vault_vpc_cidr (Forge bootstrap SG allows 6443 from that CIDR for NLB checks).
+          when:
+            - not csr_approver_api_healthy_done | bool
+            - (_healthy_n | int) < 1
+
+  rescue:
+    - name: Capture bastion LB diagnostics after CSR API target group preflight failure
+      ansible.builtin.include_role:
+        name: aws_nodes
+        tasks_from: bastion_lb_diagnostics.yml
+      vars:
+        aws_nodes_bastion_lb_diag_output_dir: "{{ csr_approver_install_dir }}/csr-fail/{{ cluster_name }}-{{ ansible_date_time.epoch }}"
+      when: csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool
+
+    - name: Re-raise API target group preflight error
+      ansible.builtin.fail:
+        msg: >-
+          {{ ansible_failed_result.msg | default(ansible_failed_result | string) }}
+          {% if csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool %}
+          Bastion diagnostics (if applicable): {{ csr_approver_install_dir }}/csr-fail/
+          {% endif %}
+
+- name: Validate API port 6443 reachable
+  tags:
+    - csr_approval
+  block:
+    - name: Wait for API port 6443
+      ansible.builtin.wait_for:
+        host: "{{ api_int_dns_name }}"
+        port: 6443
+        timeout: "{{ csr_approver_connectivity_timeout }}"
+        state: started
+
+    - name: Wait for Machine Config Server on api-int (22623)
+      ansible.builtin.wait_for:
+        host: "{{ api_int_dns_name }}"
+        port: 22623
+        timeout: "{{ csr_approver_mcs_connectivity_timeout }}"
+        state: started
+
+  rescue:
+    - name: Capture bastion LB diagnostics after CSR API connectivity failure
+      ansible.builtin.include_role:
+        name: aws_nodes
+        tasks_from: bastion_lb_diagnostics.yml
+      vars:
+        aws_nodes_bastion_lb_diag_output_dir: "{{ csr_approver_install_dir }}/csr-fail/{{ cluster_name }}-{{ ansible_date_time.epoch }}"
+      when: csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool
+
+    - name: Fail with API connectivity troubleshooting
+      ansible.builtin.fail:
+        msg: >-
+          Cannot reach {{ api_int_dns_name }} on API (6443) and/or MCS (22623) within the configured timeouts
+          (6443={{ csr_approver_connectivity_timeout }}s, 22623={{ csr_approver_mcs_connectivity_timeout }}s).
+          Masters need TCP {{ api_int_dns_name }}:22623 for Ignition (https://api-int:22623/config/master).
+          Check: 1) EC2 → Target groups → {{ cluster_name }}-api-tg and {{ cluster_name }}-mcs-tg: bootstrap registered;
+          {{ cluster_name }}-mcs-tg should include only bootstrap until control plane serves MCS.
+          2) API NLB ({{ cluster_name }}-api) listeners include **6443**, **22623**, and **443** (OAuth express; api-int aliases to this NLB).
+          3) Cross-zone load balancing enabled on that NLB (gryphon-forge sets this on apply).
+          4) foundry_nest_vpc_cidr / SGs allow Vault + Nest CIDR to reach NLB targets; 5) peering routes Nest ↔ Vault.
+          From bastion: timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443"
+          and timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/22623"
+          or curl -vk --connect-timeout 5 https://{{ api_int_dns_name }}:6443/
+          {% if csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool %}
+          Bastion diagnostics (if applicable): {{ csr_approver_install_dir }}/csr-fail/
+          {% endif %}
+
+- name: Preflight — master can reach bootstrap etcd (TCP 2379/2380)
+  tags:
+    - csr_approval
+  when: csr_approver_bootstrap_etcd_tcp_preflight | default(true) | bool
+  ansible.builtin.include_tasks: etcd_tcp_master_to_bootstrap_preflight.yml
+
 - name: Wait for bootstrap completion
   ansible.builtin.command:
-    cmd: openshift-install wait-for bootstrap-complete --dir={{ install_dir }} --log-level=info
+    cmd: "{{ csr_approver_openshift_install_cmd }} wait-for bootstrap-complete --dir={{ csr_approver_install_dir }} --log-level=info"
+  args:
+    chdir: "{{ csr_approver_install_dir }}"
   register: csr_approver_bootstrap_wait
   changed_when: false
   failed_when: false
   tags:
     - csr_approval
 
+- name: Deregister bootstrap from API and MCS NLB target groups after bootstrap-complete
+  ansible.builtin.include_tasks: deregister_bootstrap_api_mcs.yml
+  when:
+    - csr_approver_bootstrap_wait.rc == 0
+    - csr_approver_deregister_bootstrap_from_api_mcs_after_complete | default(true) | bool
+  tags:
+    - csr_approval
+
+- name: Gather bootstrap logs on failure
+  tags:
+    - csr_approval
+  when:
+    - csr_approver_bootstrap_wait.rc != 0
+    - csr_approver_gather_on_failure | default(true) | bool
+  block:
+    - name: Set bootstrap failure logs destination
+      ansible.builtin.set_fact:
+        csr_approver_gather_dest: "{{
+          csr_approver_gather_failure_dest
+          | default(
+              (install_dir | expanduser)
+              ~ '/bootstrap-failure-logs/'
+              ~ cluster_name
+              ~ '-'
+              ~ (lookup('pipe', 'date +%s') | trim)
+            )
+        }}"
+      tags:
+        - csr_approval
+
+    - name: Stat OCP SSH identity for gather bootstrap
+      ansible.builtin.stat:
+        path: "{{ csr_approver_ocp_ssh_identity_path }}"
+      register: csr_approver_gather_ssh_id_stat
+      when: csr_approver_ocp_ssh_identity_path | default('') | length > 0
+
+    - name: Run openshift-install gather bootstrap
+      vars:
+        _use_ocp_key: >-
+          {{ csr_approver_ocp_ssh_identity_path | default('') | length > 0
+             and csr_approver_gather_ssh_id_stat is defined
+             and csr_approver_gather_ssh_id_stat.stat.exists | default(false) }}
+        _gather_argv: >-
+          {{ [csr_approver_openshift_install_cmd, 'gather', 'bootstrap',
+              '--dir=' ~ csr_approver_install_dir, '--log-level=info']
+             + (['--key', csr_approver_ocp_ssh_identity_path] if _use_ocp_key else []) }}
+      ansible.builtin.command:
+        argv: "{{ _gather_argv }}"
+      args:
+        chdir: "{{ csr_approver_install_dir }}"
+      register: csr_approver_gather_bootstrap
+      changed_when: false
+      failed_when: false
+      tags:
+        - csr_approval
+
+    - name: Ensure bootstrap failure logs directory exists on controller
+      ansible.builtin.file:
+        path: "{{ csr_approver_gather_dest }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+      tags:
+        - csr_approval
+
+    - name: Inspect API target group health in AWS
+      community.aws.elb_target_group_info:
+        names:
+          - "{{ cluster_name }}-api-tg"
+        collect_targets_health: true
+        region: "{{ foundry_region | default(region) }}"
+      register: csr_approver_api_tg_info
+      delegate_to: localhost
+      run_once: true
+      ignore_errors: true
+      tags:
+        - csr_approval
+
+    - name: Inspect bootstrap instance in AWS
+      amazon.aws.ec2_instance_info:
+        filters:
+          "tag:cluster": "{{ cluster_name }}"
+          "tag:role": "bootstrap"
+        region: "{{ foundry_region | default(region) }}"
+      register: csr_approver_bootstrap_instance_info
+      delegate_to: localhost
+      run_once: true
+      ignore_errors: true
+      tags:
+        - csr_approval
+
+    - name: Optional — resolve SSH key path for master to bootstrap etcd TCP probe
+      ansible.builtin.set_fact:
+        csr_approver_etcd_probe_key_path: >-
+          {{ csr_approver_ocp_ssh_identity_path if (csr_approver_ocp_ssh_identity_path | default('') | length > 0)
+             else (ocp_ssh_private_key_path | default('') | expanduser) }}
+      run_once: true
+      delegate_to: localhost
+      when: csr_approver_bootstrap_etcd_master_tcp_probe | default(false) | bool
+      tags:
+        - csr_approval
+
+    - name: Optional — stat SSH key for master to bootstrap etcd TCP probe
+      ansible.builtin.stat:
+        path: "{{ csr_approver_etcd_probe_key_path }}"
+      register: csr_approver_etcd_probe_key_stat
+      run_once: true
+      delegate_to: localhost
+      when:
+        - csr_approver_bootstrap_etcd_master_tcp_probe | default(false) | bool
+        - csr_approver_etcd_probe_key_path is defined
+      tags:
+        - csr_approval
+
+    - name: Optional — discover masters for bootstrap etcd TCP probe
+      amazon.aws.ec2_instance_info:
+        filters:
+          "tag:cluster": "{{ cluster_name }}"
+          "tag:role": "master"
+        region: "{{ foundry_region | default(region) }}"
+      register: csr_approver_etcd_probe_masters
+      run_once: true
+      delegate_to: localhost
+      when:
+        - csr_approver_bootstrap_etcd_master_tcp_probe | default(false) | bool
+        - csr_approver_etcd_probe_key_stat is defined
+        - csr_approver_etcd_probe_key_stat.stat.exists | default(false)
+        - csr_approver_bootstrap_instance_info is not failed
+        - csr_approver_bootstrap_instance_info.instances | default([]) | length > 0
+      tags:
+        - csr_approval
+
+    - name: Optional — run TCP probes from first master to bootstrap etcd (SSH as core)
+      vars:
+        _boot_ip: "{{ csr_approver_bootstrap_instance_info.instances[0].private_ip_address }}"
+        _master_ip: "{{ csr_approver_etcd_probe_masters.instances[0].private_ip_address }}"
+        _etcd_probe_delegate: "{{ (groups['bastion'] | default([]) | length > 0) | ternary('bastion', 'localhost') }}"
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - StrictHostKeyChecking=no
+          - -o
+          - UserKnownHostsFile=/dev/null
+          - -o
+          - BatchMode=yes
+          - -i
+          - "{{ csr_approver_etcd_probe_key_path }}"
+          - "core@{{ _master_ip }}"
+          - bash
+          - -s
+        stdin: |
+          timeout 3 bash -c "echo >/dev/tcp/{{ _boot_ip }}/2379"
+          echo "2379_rc=$?"
+          timeout 3 bash -c "echo >/dev/tcp/{{ _boot_ip }}/2380"
+          echo "2380_rc=$?"
+      register: csr_approver_etcd_probe_shell
+      changed_when: false
+      failed_when: false
+      run_once: true
+      delegate_to: "{{ _etcd_probe_delegate }}"
+      when:
+        - csr_approver_bootstrap_etcd_master_tcp_probe | default(false) | bool
+        - csr_approver_etcd_probe_masters is defined
+        - csr_approver_etcd_probe_masters.instances | default([]) | length > 0
+      tags:
+        - csr_approval
+
+    - name: Optional — write master to bootstrap etcd TCP probe report
+      ansible.builtin.copy:
+        dest: "{{ csr_approver_gather_dest }}/master-to-bootstrap-etcd-tcp.txt"
+        mode: "0644"
+        content: |
+          Master → bootstrap etcd TCP probe (csr_approver_bootstrap_etcd_master_tcp_probe)
+          SSH jump: {{ (groups['bastion'] | default([]) | length > 0) | ternary('bastion', 'localhost') }}
+          SSH key path: {{ csr_approver_etcd_probe_key_path | default('n/a') }}
+          Key present: {{ (csr_approver_etcd_probe_key_stat.stat.exists | default(false))
+            if csr_approver_etcd_probe_key_stat is defined else 'n/a' }}
+          {% if csr_approver_bootstrap_instance_info is failed %}
+          Bootstrap AWS describe failed: {{ csr_approver_bootstrap_instance_info.msg | default('unknown') }}
+          {% elif csr_approver_bootstrap_instance_info.instances | default([]) | length == 0 %}
+          No bootstrap instance in AWS for tag:cluster={{ cluster_name }} tag:role=bootstrap
+          {% else %}
+          Bootstrap instance_id={{ csr_approver_bootstrap_instance_info.instances[0].instance_id | default('n/a') }}
+          state={{ csr_approver_bootstrap_instance_info.instances[0].state.name | default('n/a') }}
+          private_ip={{ csr_approver_bootstrap_instance_info.instances[0].private_ip_address | default('n/a') }}
+          {% endif %}
+          {% if csr_approver_etcd_probe_masters is not defined %}
+          Masters: not queried (missing key or no bootstrap IP).
+          {% elif csr_approver_etcd_probe_masters.instances | default([]) | length == 0 %}
+          Masters: none found for tag:cluster={{ cluster_name }} tag:role=master
+          {% else %}
+          Master probe host private_ip={{ csr_approver_etcd_probe_masters.instances[0].private_ip_address | default('n/a') }}
+          ---
+          {% if csr_approver_etcd_probe_shell is defined %}
+          remote_stdout_stderr:
+          {{ csr_approver_etcd_probe_shell.stdout | default('', true) | trim }}
+          {{ csr_approver_etcd_probe_shell.stderr | default('', true) | trim }}
+          ssh_local_rc={{ csr_approver_etcd_probe_shell.rc | default('n/a') }}
+          {% else %}
+          SSH probe not executed (see Key present / masters above).
+          {% endif %}
+          {% endif %}
+      delegate_to: localhost
+      run_once: true
+      when:
+        - csr_approver_gather_dest is defined
+        - csr_approver_bootstrap_etcd_master_tcp_probe | default(false) | bool
+      tags:
+        - csr_approval
+
+    - name: Write AWS inspection report to failure logs
+      ansible.builtin.copy:
+        dest: "{{ csr_approver_gather_dest }}/aws-inspection-report.txt"
+        content: |
+          === API Target Group ({{ cluster_name }}-api-tg) ===
+          {% if csr_approver_api_tg_info is failed %}
+          Failed to retrieve: {{ csr_approver_api_tg_info.msg | default('unknown error') }}
+          {% elif csr_approver_api_tg_info.target_groups | default([]) | length == 0 %}
+          No target group found.
+          {% else %}
+          {% for tg in csr_approver_api_tg_info.target_groups %}
+          ARN: {{ tg.target_group_arn }}
+          Targets health:
+          {% for th in tg.targets_health_description | default([]) %}
+            - {{ th.target.id | default('N/A') }}:{{ th.target.port | default(6443) }}
+              {{ th.target_health.state | default('unknown') }}
+              {% if th.target_health.reason | default('') %}({{ th.target_health.reason }}){% endif %}
+          {% endfor %}
+          {% if (tg.targets_health_description | default([]) | length) == 0 %}
+          (no targets registered)
+          {% endif %}
+          {% endfor %}
+          {% endif %}
+
+          === Bootstrap Instance ===
+          {% if csr_approver_bootstrap_instance_info is failed %}
+          Failed to retrieve: {{ csr_approver_bootstrap_instance_info.msg | default('unknown error') }}
+          {% elif csr_approver_bootstrap_instance_info.instances | default([]) | length == 0 %}
+          No bootstrap instance found.
+          {% else %}
+          {% for inst in csr_approver_bootstrap_instance_info.instances %}
+          Instance ID: {{ inst.instance_id }}
+          State: {{ inst.state.name | default(inst.state | default('N/A')) }}
+          Private IP: {{ inst.private_ip_address | default('N/A') }}
+          Subnet: {{ inst.subnet_id | default('N/A') }}
+          {% endfor %}
+          Control plane joins bootstrap etcd on TCP 2379/2380; if masters stall, verify {{ cluster_name }}-bootstrap-sg allows
+          those ports from the Vault VPC CIDR and from {{ cluster_name }}-master-sg (see aws_nodes role README).
+          {% endif %}
+        mode: "0644"
+      delegate_to: localhost
+      run_once: true
+      when: csr_approver_gather_dest is defined
+      tags:
+        - csr_approval
+
+    - name: Fetch .openshift_install.log from bastion to controller
+      ansible.builtin.fetch:
+        src: "{{ csr_approver_install_dir }}/.openshift_install.log"
+        dest: "{{ csr_approver_gather_dest }}/"
+        flat: true
+      ignore_errors: true
+      when: inventory_hostname == 'bastion'
+      tags:
+        - csr_approval
+
+    - name: Find gather bootstrap output on bastion
+      ansible.builtin.find:
+        paths: "{{ csr_approver_install_dir }}"
+        patterns: "log-bundle-*"
+        file_type: any
+      register: csr_approver_gather_output
+      when: inventory_hostname == 'bastion'
+      tags:
+        - csr_approval
+
+    - name: Fetch gather bootstrap log bundle to controller
+      ansible.builtin.fetch:
+        src: "{{ item.path }}"
+        dest: "{{ csr_approver_gather_dest }}/"
+        flat: true
+      loop: "{{ csr_approver_gather_output.files | default([]) }}"
+      when:
+        - inventory_hostname == 'bastion'
+        - csr_approver_gather_output.files | default([]) | length > 0
+      tags:
+        - csr_approval
+
+    - name: Copy .openshift_install.log to failure dir when running locally
+      ansible.builtin.copy:
+        src: "{{ csr_approver_install_dir }}/.openshift_install.log"
+        dest: "{{ csr_approver_gather_dest }}/.openshift_install.log"
+        remote_src: true
+      ignore_errors: true
+      when: inventory_hostname != 'bastion'
+      delegate_to: localhost
+      run_once: true
+      tags:
+        - csr_approval
+
+    - name: Find gather bootstrap output when running locally
+      ansible.builtin.find:
+        paths: "{{ csr_approver_install_dir }}"
+        patterns: "log-bundle-*"
+        file_type: any
+      register: csr_approver_gather_local
+      when: inventory_hostname != 'bastion'
+      tags:
+        - csr_approval
+
+    - name: Copy gather log bundle to failure dir when running locally
+      ansible.builtin.copy:
+        src: "{{ item.path }}"
+        dest: "{{ csr_approver_gather_dest }}/"
+        remote_src: true
+      loop: "{{ csr_approver_gather_local.files | default([]) }}"
+      when:
+        - inventory_hostname != 'bastion'
+        - csr_approver_gather_local.files | default([]) | length > 0
+      delegate_to: localhost
+      run_once: true
+      tags:
+        - csr_approval
+
+    - name: Capture bastion LB diagnostics into bootstrap failure logs directory
+      ansible.builtin.include_role:
+        name: aws_nodes
+        tasks_from: bastion_lb_diagnostics.yml
+      vars:
+        aws_nodes_bastion_lb_diag_output_dir: "{{ csr_approver_gather_dest }}"
+      when: csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool
+      tags:
+        - csr_approval
+
+- name: Capture bastion LB diagnostics after bootstrap failure (gather disabled)
+  ansible.builtin.include_role:
+    name: aws_nodes
+    tasks_from: bastion_lb_diagnostics.yml
+  vars:
+    aws_nodes_bastion_lb_diag_output_dir: "{{ csr_approver_install_dir }}/csr-fail/{{ cluster_name }}-{{ ansible_date_time.epoch }}"
+  when:
+    - csr_approver_bootstrap_wait.rc != 0
+    - csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool
+    - not (csr_approver_gather_on_failure | default(true) | bool)
+  tags:
+    - csr_approval
+
 - name: Fail if bootstrap did not complete
   ansible.builtin.fail:
-    msg: "Bootstrap did not complete. Check bootstrap node and API connectivity."
+    msg: >-
+      Bootstrap did not complete. Check bootstrap node and API connectivity.
+      Ensure api-int.{{ cluster_name }}.{{ base_domain }} resolves and ports 6443 and 22623 (MCS) are reachable from bastion.
+      {% if csr_approver_gather_on_failure | default(true) | bool and csr_approver_gather_dest is defined %}
+      Logs gathered to: {{ csr_approver_gather_dest }}
+      {% if csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool %}
+      Bastion probes: {{ csr_approver_gather_dest }}/bastion-diagnostics.txt
+      {% endif %}
+      {% elif csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool %}
+      Bastion probes: under {{ csr_approver_install_dir }}/csr-fail/ (gather was disabled)
+      {% endif %}
+      Troubleshooting:
+      1) API NLB ({{ cluster_name }}-api) must expose **6443**, **22623**, and **443** (OAuth express) on api-int, with cross-zone load balancing
+      when targets span AZs (forge sets this on apply; fix in AWS if upgrading from a pre-merge stack).
+      2) Verify foundry_nest_vpc_cidr is set (bootstrap SG allows 6443/22623 from Nest for bastion where applicable).
+      3) Target health: {{ cluster_name }}-api-tg and {{ cluster_name }}-mcs-tg (MCS = bootstrap :22623); see aws-inspection-report.txt.
+      4) Gather bootstrap logs: openshift-install gather bootstrap --dir={{ csr_approver_install_dir }} --log-level=info
+      5) From bastion: timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/6443"
+      and timeout 5 bash -c "echo >/dev/tcp/{{ api_int_dns_name }}/22623"
+      or curl -vk --connect-timeout 5 https://{{ api_int_dns_name }}:6443/
+      6) Masters must reach bootstrap etcd on the bootstrap private IP (TCP 2379/2380). Confirm {{ cluster_name }}-bootstrap-sg
+      ingress and that the bootstrap instance matches the IP embedded in ignition (re-run ignition if bootstrap was recreated).
+      openshift-install stdout: {{ csr_approver_bootstrap_wait.stdout | default('(none)') }}
+      openshift-install stderr: {{ csr_approver_bootstrap_wait.stderr | default('(none)') }}
   when: csr_approver_bootstrap_wait.rc != 0
   tags:
     - csr_approval
 
 - name: Create CSR approval and wait script
   ansible.builtin.copy:
-    dest: "{{ install_dir }}/approve-and-wait.sh"
+    dest: "{{ csr_approver_install_dir }}/approve-and-wait.sh"
     content: |
       #!/bin/bash
-      set -e
-      export KUBECONFIG="{{ install_dir }}/auth/kubeconfig"
-      INSTALL_DIR="{{ install_dir }}"
+      # No global set -e: oc get/adm failures must not exit the loop (UPI workers, transient API errors; issue #20).
+      set -u
+      export KUBECONFIG="{{ csr_approver_install_dir }}/auth/kubeconfig"
+      INSTALL_DIR="{{ csr_approver_install_dir }}"
       INTERVAL={{ csr_approver_csr_check_interval }}
+      OPENSHIFT_INSTALL="{{ csr_approver_openshift_install_cmd }}"
+      OC_CMD="{{ csr_approver_oc_cmd }}"
+      # Pending CSRs: match Red Hat UPI pattern (CSRs with no .status), not jsonpath status.conditions==null.
+      CSR_PENDING_TEMPLATE='{% raw %}{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}{% endraw %}'
 
-      # Run install-complete in background; while waiting, approve CSRs
+      # OAuth (only): API NLB :443 → oauth-tg → masters :6443 + Route53 oauth-openshift.apps (issues #23/#24). Console uses *.apps → ingress, not this path.
+      # No oc patch of Route oauth-openshift — cluster-authentication-operator remains source of truth.
+
       (
-        openshift-install wait-for install-complete --dir="$INSTALL_DIR" --log-level=info
+        $OPENSHIFT_INSTALL wait-for install-complete --dir="$INSTALL_DIR" --log-level=info
       ) &
       WAIT_PID=$!
 
-      while kill -0 $WAIT_PID 2>/dev/null; do
-        for csr in $(oc get csr -o jsonpath='{.items[?(@.status.conditions==null)].metadata.name}' 2>/dev/null); do
-          oc adm certificate approve "$csr" 2>/dev/null && echo "Approved $csr"
-        done
-        sleep $INTERVAL
+      while kill -0 "$WAIT_PID" 2>/dev/null; do
+        pending="$($OC_CMD get csr -o go-template="$CSR_PENDING_TEMPLATE" 2>/dev/null || true)"
+        if [ -n "${pending:-}" ]; then
+          while IFS= read -r csr; do
+            [ -z "$csr" ] && continue
+            if $OC_CMD adm certificate approve "$csr" 2>/dev/null; then
+              echo "Approved $csr"
+            fi
+          done <<< "$pending"
+        fi
+        sleep "$INTERVAL"
       done
 
-      wait $WAIT_PID
+      wait "$WAIT_PID"
+      exit $?
     mode: "0755"
   tags:
     - csr_approval
 
 - name: Run CSR approval and wait for install complete
-  ansible.builtin.command:
-    cmd: "{{ install_dir }}/approve-and-wait.sh"
   tags:
     - csr_approval
+  block:
+    - name: Execute approve-and-wait script
+      ansible.builtin.command:
+        cmd: "{{ csr_approver_install_dir }}/approve-and-wait.sh"
+      register: csr_approver_install_complete_cmd
+
+  rescue:
+    - name: Capture bastion LB diagnostics after install-complete failure
+      ansible.builtin.include_role:
+        name: aws_nodes
+        tasks_from: bastion_lb_diagnostics.yml
+      vars:
+        aws_nodes_bastion_lb_diag_output_dir: "{{ csr_approver_install_dir }}/csr-fail/{{ cluster_name }}-{{ ansible_date_time.epoch }}"
+      when: csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool
+
+    - name: Optional hints for console RouteHealth / ingress 503 (not OAuth API NLB)
+      ansible.builtin.debug:
+        msg:
+          - "Console uses *.apps → ingress NLB/ALB, not oauth-openshift.apps → API NLB (see AGENTS.md)."
+          - >-
+            AWS: describe-target-health for {{ cluster_name }}-ingress-443-tg
+            (pass --region for your account if the CLI default is wrong).
+          - "oc get co console ingress; oc describe route console -n openshift-console"
+          - "oc exec -n openshift-ingress deploy/router-default -- grep -i openshift-console /var/lib/haproxy/conf/haproxy.config"
+          - "HAProxy stats may be on router pod :1936 if exposed."
+      when: csr_approver_emit_console_ingress_hints_on_install_failure | default(false) | bool
+
+    - name: Propagate install-complete failure
+      ansible.builtin.fail:
+        msg: >-
+          openshift-install wait-for install-complete failed (approve-and-wait.sh).
+          {% if csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool %}
+          Bastion diagnostics (if applicable): {{ csr_approver_install_dir }}/csr-fail/
+          {% endif %}
+          Detail: {{ ansible_failed_result.msg | default('') }}
+          stdout: {{ ansible_failed_result.stdout | default('(none)') }}
+          stderr: {{ ansible_failed_result.stderr | default('(none)') }}

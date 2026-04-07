@@ -1,14 +1,21 @@
 ---
 # AWS Nodes role - Provision EC2, ELB, Route53 for OpenShift UPI
 
+- name: Include EC2 prerequisites (RHCOS AMI, key pair)
+  ansible.builtin.include_tasks: ec2_prerequisites.yml
+  tags:
+    - aws_nodes
+    - ec2
+
 - name: Include security groups tasks
   ansible.builtin.include_tasks: security_groups.yml
   tags:
     - aws_nodes
     - security_groups
 
-- name: Include EC2 instances tasks
-  ansible.builtin.include_tasks: ec2_instances.yml
+# Bootstrap + masters first — NLB target groups need their instance IDs. Worker Ignition requires api-int DNS + MCS first.
+- name: Include EC2 control plane (bootstrap and masters)
+  ansible.builtin.include_tasks: ec2_control_plane.yml
   tags:
     - aws_nodes
     - ec2
@@ -24,3 +31,43 @@
   tags:
     - aws_nodes
     - route53
+
+- name: Gate DNS before workers (api-int in zone, zone linked to Vault VPC)
+  ansible.builtin.include_tasks: dns_gate_before_workers.yml
+  when:
+    - (worker_count | default(0) | int) + (gpu_worker_count | default(0) | int) > 0
+    - aws_nodes_dns_gate_enabled | bool
+  tags:
+    - aws_nodes
+    - ec2
+    - route53
+    - dns_gate
+
+- name: Include EC2 worker and GPU worker tasks
+  ansible.builtin.include_tasks: ec2_workers.yml
+  when: (worker_count | default(0) | int) + (gpu_worker_count | default(0) | int) > 0
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Register ingress NLB/ALB targets (workers; masters when zero workers / compact)
+  ansible.builtin.include_tasks: load_balancers_ingress_registration.yml
+  tags:
+    - aws_nodes
+    - ec2
+    - load_balancers
+
+- name: Optional root volume size verification (all node roles)
+  ansible.builtin.include_tasks: ec2_root_volume_verify.yml
+  when: aws_nodes_verify_root_ebs_size_after_launch | bool
+  tags:
+    - aws_nodes
+    - ec2
+
+# After api/api-int/*.apps records exist in the private zone (Forge), bastion getent/TCP checks are meaningful.
+- name: Capture NLB / TG validation artifacts (local directory)
+  ansible.builtin.include_tasks: load_balancers_validation.yml
+  when: aws_nodes_lb_validation_enabled | bool
+  tags:
+    - aws_nodes
+    - load_balancers

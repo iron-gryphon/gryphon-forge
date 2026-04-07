@@ -1,0 +1,50 @@
+---
+# Ensure Linux oc exists under bastion_install_dir/bin for mirror digest preflight (client tarball only).
+- name: Check for Linux oc binary on bastion
+  ansible.builtin.stat:
+    path: "{{ bastion_install_dir }}/bin/oc"
+  register: ignition_oc_on_bastion_stat
+
+- name: Ensure temp directory for OCP client download on bastion
+  ansible.builtin.file:
+    path: "{{ ignition_mirror_check_bastion_tmp }}"
+    state: directory
+    mode: "0700"
+  when: not ignition_oc_on_bastion_stat.stat.exists | default(false)
+
+- name: Download openshift-client to bastion for mirror check
+  ansible.builtin.get_url:
+    url: "{{ ignition_ocp_client_url_linux }}"
+    dest: "{{ ignition_mirror_check_bastion_tmp }}/openshift-client-linux.tar.gz"
+    mode: "0644"
+    validate_certs: "{{ ignition_ocp_mirror_validate_certs | default(true) | bool }}"
+  when: not ignition_oc_on_bastion_stat.stat.exists | default(false)
+
+- name: Extract openshift-client on bastion
+  ansible.builtin.unarchive:
+    src: "{{ ignition_mirror_check_bastion_tmp }}/openshift-client-linux.tar.gz"
+    dest: "{{ ignition_mirror_check_bastion_tmp }}"
+    remote_src: true
+  when: not ignition_oc_on_bastion_stat.stat.exists | default(false)
+
+- name: Ensure bastion bin directory exists
+  ansible.builtin.file:
+    path: "{{ bastion_install_dir }}/bin"
+    state: directory
+    mode: "0755"
+  when: not ignition_oc_on_bastion_stat.stat.exists | default(false)
+
+- name: Install oc binary on bastion for mirror check
+  ansible.builtin.shell: |
+    set -euo pipefail
+    BIN=$(find "{{ ignition_mirror_check_bastion_tmp }}" -name 'oc' -type f 2>/dev/null | head -1)
+    cp "$BIN" "{{ bastion_install_dir }}/bin/oc"
+    chmod 0755 "{{ bastion_install_dir }}/bin/oc"
+  when: not ignition_oc_on_bastion_stat.stat.exists | default(false)
+  changed_when: true
+
+- name: Remove mirror check temp directory on bastion
+  ansible.builtin.file:
+    path: "{{ ignition_mirror_check_bastion_tmp }}"
+    state: absent
+  when: not ignition_oc_on_bastion_stat.stat.exists | default(false)

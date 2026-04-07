@@ -1,2 +1,32 @@
 ---
 # Ignition role defaults
+# Optional paths: set openshift_install_binary_path / openshift_client_binary_path in inventory (group_vars/all.yml).
+
+# After create manifests: set spec.platform.aws.privateZone.id to foundry_internal_hosted_zone_id (reuse foundry private zone).
+ignition_patch_dns_aws_private_zone: true
+
+# When true: patch default IngressController so endpointPublishingStrategy.loadBalancer.dnsManagementPolicy is Unmanaged (Forge Route53 owns *.apps).
+ignition_ingress_default_dns_management_unmanaged: false
+
+# When true and Forge uses an NLB (no foundry_ingress_certificate_arn / ALB): set endpointPublishingStrategy to HostNetwork so the router listens on the
+# node host ports the NLB target groups use (see roles/ignition/README.md). Ignored when an ACM cert is set (ALB path).
+ignition_ingress_endpoint_publishing_hostnetwork: true
+ignition_ingress_hostnetwork_http_port: 80
+ignition_ingress_hostnetwork_https_port: 443
+
+# When true and HostNetwork + NLB path apply: set spec.replicas on IngressController/default so each worker can schedule a router pod
+# (NLB registers all workers; default 2 replicas leaves half the targets unhealthy). Empty string = max(2, worker_count + gpu_worker_count).
+ignition_ingress_hostnetwork_router_replicas_merge: true
+ignition_ingress_hostnetwork_router_replicas: ""
+
+# Optional JSON (docker config style) with {"auths":{...}} for the private mirror only; merged with pull_secret_path for tag discovery.
+mirror_registry_dockerconfig_extra_path: ""  # noqa: var-naming[no-role-prefix]
+# Registry API scheme for discover-mirror-release-tag.sh (curl /v2/.../tags/list); use http only for plain-HTTP mirrors.
+mirror_registry_discovery_scheme: "https"  # noqa: var-naming[no-role-prefix]
+
+# API NLB OAuth path (issues #23/#24): kube-apiserver must present a cert valid for oauth-openshift.apps.<cluster>.<domain>.
+# When true: generate a forge-local CA + leaf, merge CA into install-config additionalTrustBundle (policy Always), and add
+# APIServer.spec.servingCerts.namedCertificates + Secret in manifests/ (Red Hat–supported user-provided API serving certs).
+ignition_oauth_apps_api_named_certificate: true
+ignition_oauth_apps_api_serving_secret_name: forge-oauth-apps-api-serving
+ignition_oauth_apps_api_cert_validity_days: 3650

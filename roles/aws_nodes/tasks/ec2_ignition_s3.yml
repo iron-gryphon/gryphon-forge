@@ -1,0 +1,275 @@
+---
+# S3-backed ignition for EC2 when user data exceeds 16KB limit
+# AWS EC2 user data is limited to 16KB; bootstrap.ign often exceeds this.
+# Solution: upload to S3, use stub ignition with s3:// URL. Ignition fetches via instance IAM role.
+
+- name: Check if ignition files exist
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: aws_nodes_ignition_stat
+  loop:
+    - "{{ install_dir }}/master.ign"
+    - "{{ install_dir }}/worker.ign"
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Regenerate ignition configs when master or worker ign is missing
+  ansible.builtin.command:
+    cmd: "{{ openshift_install_cmd }} create ignition-configs --dir={{ install_dir }}"
+  environment:
+    HOME: "{{ ansible_facts['env']['HOME'] | default('/tmp') }}"
+    AWS_REGION: "{{ foundry_region }}"
+    AWS_DEFAULT_REGION: "{{ foundry_region }}"
+  when: aws_nodes_ignition_stat.results | selectattr('stat.exists') | list | length < 2
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Get AWS account ID for bucket naming
+  amazon.aws.aws_caller_info:
+  register: aws_nodes_caller_info
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Set ignition bucket name
+  ansible.builtin.set_fact:
+    aws_nodes_ignition_bucket: "{{ (cluster_name | replace('_', '-') | lower) }}-ignition-{{ aws_nodes_caller_info.account }}"
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Create S3 bucket for ignition configs
+  amazon.aws.s3_bucket:
+    name: "{{ aws_nodes_ignition_bucket }}"
+    state: present
+    region: "{{ foundry_region }}"
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Create IAM role for EC2 to read ignition from S3
+  amazon.aws.iam_role:
+    name: "{{ cluster_name }}-ignition-reader"
+    assume_role_policy_document: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Principal": {"Service": "ec2.amazonaws.com"},
+          "Action": "sts:AssumeRole"
+        }]
+      }
+    create_instance_profile: false
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Attach S3 read policy to ignition reader role
+  amazon.aws.iam_policy:
+    iam_type: role
+    iam_name: "{{ cluster_name }}-ignition-reader"
+    policy_name: "{{ cluster_name }}-ignition-s3-read"
+    policy_json: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "arn:aws:s3:::{{ aws_nodes_ignition_bucket }}/*"
+        }]
+      }
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Create instance profile for ignition reader
+  amazon.aws.iam_instance_profile:
+    name: "{{ cluster_name }}-ignition-reader"
+    role: "{{ cluster_name }}-ignition-reader"
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+# Masters/workers need S3 ignition fetch plus AWS instance profile permissions for cloud-controller-manager
+# (bootstrap uses ignition-only; see openshift/installer upi/aws/cloudformation/03_cluster_security.yaml).
+- name: Create IAM role for control-plane nodes (cloud provider + ignition S3)
+  amazon.aws.iam_role:
+    name: "{{ cluster_name }}-ocp-master"
+    assume_role_policy_document: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Principal": {"Service": "ec2.amazonaws.com"},
+          "Action": "sts:AssumeRole"
+        }]
+      }
+    create_instance_profile: false
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Attach OpenShift AWS master cloud-provider policy
+  amazon.aws.iam_policy:
+    iam_type: role
+    iam_name: "{{ cluster_name }}-ocp-master"
+    policy_name: "{{ cluster_name }}-ocp-master-cloud-provider"
+    policy_json: "{{ lookup('file', 'iam_policy_ocp_aws_master_cloud_provider.json') }}"
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Attach S3 ignition read policy to OCP master role
+  amazon.aws.iam_policy:
+    iam_type: role
+    iam_name: "{{ cluster_name }}-ocp-master"
+    policy_name: "{{ cluster_name }}-ocp-master-ignition-s3-read"
+    policy_json: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "arn:aws:s3:::{{ aws_nodes_ignition_bucket }}/*"
+        }]
+      }
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Create instance profile for OCP master nodes
+  amazon.aws.iam_instance_profile:
+    name: "{{ cluster_name }}-ocp-master"
+    role: "{{ cluster_name }}-ocp-master"
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Create IAM role for worker nodes (minimal cloud provider + ignition S3)
+  amazon.aws.iam_role:
+    name: "{{ cluster_name }}-ocp-worker"
+    assume_role_policy_document: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Principal": {"Service": "ec2.amazonaws.com"},
+          "Action": "sts:AssumeRole"
+        }]
+      }
+    create_instance_profile: false
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Attach OpenShift AWS worker cloud-provider policy
+  amazon.aws.iam_policy:
+    iam_type: role
+    iam_name: "{{ cluster_name }}-ocp-worker"
+    policy_name: "{{ cluster_name }}-ocp-worker-cloud-provider"
+    policy_json: "{{ lookup('file', 'iam_policy_ocp_aws_worker_cloud_provider.json') }}"
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Attach S3 ignition read policy to OCP worker role
+  amazon.aws.iam_policy:
+    iam_type: role
+    iam_name: "{{ cluster_name }}-ocp-worker"
+    policy_name: "{{ cluster_name }}-ocp-worker-ignition-s3-read"
+    policy_json: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [{
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "arn:aws:s3:::{{ aws_nodes_ignition_bucket }}/*"
+        }]
+      }
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Create instance profile for OCP worker nodes
+  amazon.aws.iam_instance_profile:
+    name: "{{ cluster_name }}-ocp-worker"
+    role: "{{ cluster_name }}-ocp-worker"
+    state: present
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Upload bootstrap ignition to S3
+  amazon.aws.s3_object:
+    bucket: "{{ aws_nodes_ignition_bucket }}"
+    object: "bootstrap.ign"
+    src: "{{ install_dir }}/bootstrap.ign"
+    mode: put
+    region: "{{ foundry_region }}"
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Upload master ignition to S3
+  amazon.aws.s3_object:
+    bucket: "{{ aws_nodes_ignition_bucket }}"
+    object: "master.ign"
+    src: "{{ install_dir }}/master.ign"
+    mode: put
+    region: "{{ foundry_region }}"
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Upload worker ignition to S3
+  amazon.aws.s3_object:
+    bucket: "{{ aws_nodes_ignition_bucket }}"
+    object: "worker.ign"
+    src: "{{ install_dir }}/worker.ign"
+    mode: put
+    region: "{{ foundry_region }}"
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Set bootstrap user_data to S3 stub
+  ansible.builtin.set_fact:
+    aws_nodes_bootstrap_user_data: '{"ignition":{"version":"3.2.0","config":{"replace":{"source":"s3://{{ aws_nodes_ignition_bucket }}/bootstrap.ign"}}}}'
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Set master user_data to S3 stub
+  ansible.builtin.set_fact:
+    aws_nodes_master_user_data: '{"ignition":{"version":"3.2.0","config":{"replace":{"source":"s3://{{ aws_nodes_ignition_bucket }}/master.ign"}}}}'
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Set worker user_data to S3 stub
+  ansible.builtin.set_fact:
+    aws_nodes_worker_user_data: '{"ignition":{"version":"3.2.0","config":{"replace":{"source":"s3://{{ aws_nodes_ignition_bucket }}/worker.ign"}}}}'
+  tags:
+    - aws_nodes
+    - ec2
+
+- name: Set instance profile names for EC2 launches
+  ansible.builtin.set_fact:
+    aws_nodes_ignition_instance_profile: "{{ cluster_name }}-ignition-reader"
+    aws_nodes_ocp_master_instance_profile: "{{ cluster_name }}-ocp-master"
+    aws_nodes_ocp_worker_instance_profile: "{{ cluster_name }}-ocp-worker"
+  tags:
+    - aws_nodes
+    - ec2

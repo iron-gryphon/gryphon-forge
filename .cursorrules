@@ -22,7 +22,7 @@ gryphon-forge deploys Red Hat OpenShift (OCP) via User-Provisioned Infrastructur
 ## Key Variables
 
 - `foundry_*` — From gryphon-foundry (vpc_id, private_subnets, bastion_sg, hosted_zone, region).
-- `cluster_name`, `base_domain`, `ocp_version` — Cluster identity.
+- `cluster_name`, `base_domain`, `ocp_version` — Cluster identity (`ocp_cluster_name` / `ocp_base_domain` from foundry override these when set).
 - `*_count`, `*_instance_type` — Node sizing (master, worker, gpu_worker).
 - `install_dir`, `foundry_output_path`, `pull_secret_path`, `ssh_public_key_path`.
 
@@ -33,7 +33,7 @@ OCP nodes (RHCOS) are immutable. Do not add Ansible tasks that modify node OS di
 ## AWS & OpenShift
 
 - EC2 provisioning uses `amazon.aws` and `community.aws` collections.
-- Ignition generation uses `openshift-install` (must be in PATH).
+- Ignition generation uses `openshift-install` from `install_dir/bin/` (auto-downloaded from `forge_ocp_mirror_*`, same channel as bastion) or `openshift_install_binary_path` when set.
 - Route53 records use `foundry_internal_hosted_zone_id` for internal DNS.
 
 ## When Editing

@@ -1,0 +1,28 @@
+---
+# openshift-install requires real newlines between PEM blocks; Terraform/JSON mirror strings often
+# retain literal \n (backslash + n). normalize_trust_bundle_pem.py collapses those until stable.
+
+- name: Normalize additionalTrustBundle PEM (literal \\n from JSON/Terraform)
+  when: ignition_install_config_trust_pem | default('') | trim | length > 0
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_python_interpreter | default(ansible_playbook_python) }}"
+      - "{{ role_path }}/files/normalize_trust_bundle_pem.py"
+    stdin: "{{ ignition_install_config_trust_pem }}"
+    stdin_add_newline: false
+  register: ignition_trust_pem_normalized
+  changed_when: false
+  tags:
+    - ignition
+    - config
+
+- name: Apply normalized trust bundle for install-config template
+  when:
+    - ignition_install_config_trust_pem | default('') | trim | length > 0
+    - ignition_trust_pem_normalized is defined
+    - ignition_trust_pem_normalized.rc == 0
+  ansible.builtin.set_fact:
+    ignition_install_config_trust_pem: "{{ ignition_trust_pem_normalized.stdout }}"
+  tags:
+    - ignition
+    - config

@@ -1,0 +1,169 @@
+---
+# Optional: validate gryphon-foundry JSON before a full deploy.
+# Calls Route53 (get_hosted_zone) to confirm the internal zone is associated with vault_vpc_id — requires AWS credentials.
+#
+#   ansible-playbook playbooks/preflight.yml -i inventory/hosts.yml \
+#     -e foundry_preflight_path=../gryphon-foundry/foundry_output.json
+#
+# Or set foundry_output_path in inventory/group_vars/all.yml to point at the file and omit -e.
+
+- name: Validate foundry output JSON for Gryphon Forge
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Resolve path to foundry JSON
+      vars:
+        # Relative paths anchor to gryphon-forge repo root (playbook_dir/..), not the shell cwd, so the same
+        # -e foundry_preflight_path=../gryphon-foundry/foundry_output.json works from repo root or playbooks/.
+        _preflight_raw: >-
+          {{
+            (foundry_preflight_path
+            | default(foundry_output_path | default('../gryphon-foundry/foundry_output.json')))
+            | expanduser
+          }}
+      ansible.builtin.set_fact:
+        preflight_foundry_file: >-
+          {{
+            _preflight_raw if _preflight_raw.startswith('/')
+            else (playbook_dir ~ '/../' ~ _preflight_raw)
+          }}
+
+    - name: Stat foundry JSON
+      ansible.builtin.stat:
+        path: "{{ preflight_foundry_file }}"
+      register: preflight_foundry_stat
+
+    - name: Require foundry JSON file
+      ansible.builtin.fail:
+        msg: >-
+          No foundry JSON at {{ preflight_foundry_file }}.
+          Example: ansible-playbook playbooks/preflight.yml -i inventory/hosts.yml
+          -e foundry_preflight_path=../gryphon-foundry/foundry_output.json
+      when: not preflight_foundry_stat.stat.exists | default(false)
+
+    - name: Load foundry JSON
+      ansible.builtin.include_vars:
+        file: "{{ preflight_foundry_file }}"
+        name: preflight_ff
+
+    - name: Derive Terraform-wrapped or flat values
+      ansible.builtin.set_fact:
+        preflight_nest_cidr: >-
+          {{ (preflight_ff.nest_vpc_cidr | default({}))['value']
+          | default(preflight_ff.nest_vpc_cidr | default('')) }}
+        preflight_bastion_ip: >-
+          {{ (preflight_ff.bastion_public_ip | default({}))['value']
+          | default(preflight_ff.bastion_public_ip | default('')) }}
+        preflight_subnets: >-
+          {{ (preflight_ff.vault_private_subnet_ids | default(preflight_ff.ocp_upi_subnet_ids | default({})))['value']
+          | default(preflight_ff.vault_private_subnet_ids | default(preflight_ff.ocp_upi_subnet_ids | default([]))) }}
+        preflight_zone_id: >-
+          {{ (preflight_ff.internal_hosted_zone_id | default({}))['value']
+          | default(preflight_ff.internal_hosted_zone_id | default('')) }}
+        preflight_vpc_id: >-
+          {{ (preflight_ff.vault_vpc_id | default({}))['value']
+          | default(preflight_ff.vault_vpc_id | default('')) }}
+        preflight_region: >-
+          {{ (preflight_ff.region | default({}))['value']
+          | default(preflight_ff.region | default('')) }}
+        preflight_ocp_base_domain: >-
+          {{ (preflight_ff.ocp_base_domain | default({}))['value']
+          | default(preflight_ff.ocp_base_domain | default('')) }}
+        preflight_ocp_cluster_name: >-
+          {{ (preflight_ff.ocp_cluster_name | default({}))['value']
+          | default(preflight_ff.ocp_cluster_name | default('')) }}
+        preflight_vault_amazon_dns: >-
+          {{ (preflight_ff.vault_vpc_amazon_provided_dns | default({}))['value']
+          | default(preflight_ff.vault_vpc_amazon_provided_dns | default('')) }}
+        preflight_ocp_api_int: >-
+          {{ (preflight_ff.ocp_api_int_fqdn | default({}))['value']
+          | default(preflight_ff.ocp_api_int_fqdn | default('')) }}
+
+    - name: Assert UPI subnet count
+      ansible.builtin.assert:
+        that:
+          - preflight_subnets | length >= 3
+        fail_msg: >-
+          Need at least 3 vault private subnets in foundry output (vault_private_subnet_ids or ocp_upi_subnet_ids);
+          got {{ preflight_subnets | length }}.
+
+    - name: Assert core identifiers
+      ansible.builtin.assert:
+        that:
+          - preflight_vpc_id | length > 0
+          - preflight_zone_id | length > 0
+          - preflight_region | length > 0
+        fail_msg: >-
+          foundry JSON must include vault_vpc_id, internal_hosted_zone_id, and region (Terraform .value form OK).
+
+    - name: Assert vault_vpc_amazon_provided_dns when OCP DNS is configured (gryphon-foundry output)
+      ansible.builtin.assert:
+        that:
+          - preflight_vault_amazon_dns | length > 0
+        fail_msg: >-
+          ocp_base_domain is set but vault_vpc_amazon_provided_dns is missing or null in foundry JSON.
+          gryphon-foundry must emit this (cidrhost(vault_vpc_cidr, 2)) so operators can dig api-int against the Vault resolver.
+          Re-run terraform apply and terraform output -json.
+      when: preflight_ocp_base_domain | default('') | length > 0
+
+    - name: Assert ocp_api_int_fqdn matches ocp_cluster_name and ocp_base_domain in foundry JSON
+      ansible.builtin.assert:
+        that:
+          - (preflight_ocp_api_int | lower) == (('api-int.' ~ preflight_ocp_cluster_name ~ '.' ~ _preflight_bd) | lower)
+        fail_msg: >-
+          ocp_api_int_fqdn ({{ preflight_ocp_api_int }}) does not match
+          api-int.{{ preflight_ocp_cluster_name }}.{{ _preflight_bd }} (from ocp_cluster_name + ocp_base_domain).
+      vars:
+        _preflight_bd: "{{ preflight_ocp_base_domain | regex_replace('\\.$', '') }}"
+      when:
+        - preflight_ocp_api_int | default('') | length > 0
+        - preflight_ocp_cluster_name | default('') | length > 0
+        - preflight_ocp_base_domain | default('') | length > 0
+
+    - name: Fetch Route53 private zone details (VPC association for Vault resolver)
+      amazon.aws.route53_info:
+        query: hosted_zone
+        hosted_zone_method: details
+        hosted_zone_id: "{{ preflight_zone_id }}"
+        region: "{{ preflight_region }}"
+      register: preflight_route53_zone
+
+    - name: Derive VPC IDs associated with internal hosted zone
+      ansible.builtin.set_fact:
+        preflight_zone_vpc_ids: >-
+          {{
+            (
+              (preflight_route53_zone.VPCs | default(preflight_route53_zone.vpcs | default([])))
+              | selectattr('VPCId', 'defined')
+              | map(attribute='VPCId')
+              | list
+            )
+            + (
+              (preflight_route53_zone.VPCs | default(preflight_route53_zone.vpcs | default([])))
+              | selectattr('vpc_id', 'defined')
+              | map(attribute='vpc_id')
+              | list
+            )
+            | unique
+            | list
+          }}
+
+    - name: Assert internal zone is linked to Vault VPC (worker/master Ignition uses VPC DNS +2)
+      ansible.builtin.assert:
+        that:
+          - preflight_zone_vpc_ids | length > 0
+          - preflight_vpc_id in preflight_zone_vpc_ids
+        fail_msg: >-
+          internal_hosted_zone_id ({{ preflight_zone_id }}) must be a private zone associated with vault_vpc_id
+          {{ preflight_vpc_id }}. Associated VPCs in Route53: {{ preflight_zone_vpc_ids | join(', ') }}.
+          RHCOS resolves api-int via the VPC resolver (e.g. 10.1.0.2 for 10.1.0.0/16); a zone not linked to the Vault VPC returns NXDOMAIN.
+          Fix in gryphon-foundry: associate the internal private zone with the Vault VPC, or pass the correct zone ID in foundry output.
+
+    - name: Assert nest_vpc_cidr when bastion is defined (bootstrap API from Nest)
+      ansible.builtin.assert:
+        that:
+          - preflight_nest_cidr | length > 0
+        fail_msg: >-
+          bastion_public_ip is set but nest_vpc_cidr is missing or empty. Forge opens bootstrap 6443/22623 to this
+          CIDR so openshift-install on the bastion can reach the API NLB over VPC peering.
+      when: preflight_bastion_ip | length > 0

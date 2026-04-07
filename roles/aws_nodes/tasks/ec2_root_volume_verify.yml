@@ -1,0 +1,92 @@
+---
+# Optional DescribeInstances/DescribeVolumes checks for all OCP nodes (runs after control plane + any workers).
+
+- name: Optional — verify root EBS volume size on AMI root device (DescribeInstances / DescribeVolumes)
+  when: aws_nodes_verify_root_ebs_size_after_launch | bool
+  tags:
+    - aws_nodes
+    - ec2
+  block:
+    - name: Collect launched OCP instance IDs for root volume verification
+      ansible.builtin.set_fact:
+        aws_nodes_ec2_launched_instance_ids: >-
+          {{
+            (aws_nodes_bootstrap_instance.instance_ids | default([]))
+            + (aws_nodes_master_launch.results | default([]) | map(attribute='instance_ids') | flatten)
+            + ((aws_nodes_worker_launch.results | default([]) | map(attribute='instance_ids') | flatten)
+               if aws_nodes_worker_launch is defined else [])
+            + (((aws_nodes_gpu_worker_launch.results | default([]) | map(attribute='instance_ids') | flatten))
+               if ((gpu_worker_count | default(0) | int > 0) and (aws_nodes_gpu_worker_launch is defined)) else [])
+          }}
+
+    - name: Assert launched instances exist for root volume verification
+      ansible.builtin.assert:
+        that:
+          - aws_nodes_ec2_launched_instance_ids | length > 0
+        fail_msg: No EC2 instance IDs collected for root volume verification (unexpected after launch tasks).
+
+    - name: Describe launched instances (block device mappings)
+      amazon.aws.ec2_instance_info:
+        region: "{{ foundry_region }}"
+        instance_ids: "{{ aws_nodes_ec2_launched_instance_ids }}"
+      register: aws_nodes_verify_ec2_info
+
+    - name: Build expected root volume size (GiB) by instance role tag
+      ansible.builtin.set_fact:
+        aws_nodes_expected_root_gib_by_role:
+          bootstrap: "{{ aws_nodes_bootstrap_root_volume_size_gb | int }}"
+          master: "{{ aws_nodes_master_root_volume_size_gb | int }}"
+          worker: "{{ aws_nodes_worker_root_volume_size_gb | int }}"
+          gpu-worker: "{{ aws_nodes_gpu_worker_root_volume_size_gb | int }}"
+
+    - name: Reset root volume verification entry list (idempotent block)
+      ansible.builtin.set_fact:
+        aws_nodes_root_vol_verify_entries: []
+
+    - name: Build root volume verification entries (device must match resolved AMI root)
+      ansible.builtin.set_fact:
+        aws_nodes_root_vol_verify_entries: "{{ aws_nodes_root_vol_verify_entries + [verify_entry] }}"
+      loop: "{{ aws_nodes_verify_ec2_info.instances }}"
+      vars:
+        root_bdm: >-
+          {{
+            item.block_device_mappings
+            | selectattr('device_name', 'equalto', aws_nodes_rhcos_root_device_name_resolved)
+            | list | first | default({}, true)
+          }}
+        inst_role: "{{ item.tags.role | default('worker') }}"
+        verify_entry:
+          instance_id: "{{ item.instance_id }}"
+          role: "{{ inst_role }}"
+          volume_id: "{{ (root_bdm.ebs | default({})).volume_id | default('', true) }}"
+          expected_gib: "{{ aws_nodes_expected_root_gib_by_role[inst_role] | default(aws_nodes_worker_root_volume_size_gb | int) | int }}"
+
+    - name: Assert root block device mapping exists at resolved device name
+      ansible.builtin.assert:
+        that:
+          - item.volume_id | length > 0
+        fail_msg: >-
+          Instance {{ item.instance_id }} (role {{ item.role }}) has no EBS mapping for
+          {{ aws_nodes_rhcos_root_device_name_resolved }}. Override aws_nodes_rhcos_root_device_name only to match describe-images RootDeviceName.
+      loop: "{{ aws_nodes_root_vol_verify_entries }}"
+
+    - name: Describe root EBS volumes by volume ID
+      amazon.aws.ec2_vol_info:
+        region: "{{ foundry_region }}"
+        filters:
+          volume-id: "{{ item.volume_id }}"
+      loop: "{{ aws_nodes_root_vol_verify_entries }}"
+      register: aws_nodes_root_vol_describe
+
+    - name: Assert root EBS size meets configured minimum for role
+      ansible.builtin.assert:
+        that:
+          - volwrap.volumes | length > 0
+          - volwrap.volumes[0].size | int >= volwrap.item.expected_gib | int
+        fail_msg: >-
+          Instance {{ volwrap.item.instance_id }} (role {{ volwrap.item.role }}) root volume {{ volwrap.item.volume_id }}
+          is {{ (volwrap.volumes[0].size | default(0)) }} GiB; expected >= {{ volwrap.item.expected_gib }} GiB
+          on {{ aws_nodes_rhcos_root_device_name_resolved }}.
+      loop: "{{ aws_nodes_root_vol_describe.results }}"
+      loop_control:
+        loop_var: volwrap

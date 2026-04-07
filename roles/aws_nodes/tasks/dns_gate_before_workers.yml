@@ -1,0 +1,235 @@
+---
+# Fail before worker/GPU launch if api-int (and api) are not in the private zone Forge uses, or if that zone
+# is not associated with the Vault VPC (RHCOS uses the VPC resolver at <network>+2 — NXDOMAIN otherwise).
+# Included from main.yml only when workers or GPU workers are requested and aws_nodes_dns_gate_enabled is true.
+
+- name: Assert internal hosted zone id is set (Route53 + install-config alignment)
+  ansible.builtin.assert:
+    that:
+      - foundry_internal_hosted_zone_id | default('') | length > 0
+    fail_msg: >-
+      foundry_internal_hosted_zone_id is empty. Forge publishes api/api-int/*.apps into this zone; it must match
+      gryphon-foundry internal_hosted_zone_id and the private zone associated with vault_vpc_id so VPC DNS (AmazonProvidedDNS)
+      resolves api-int.{{ cluster_name }}.{{ base_domain }}. Pass foundry_output.json or set internal_hosted_zone_id.
+  tags:
+    - aws_nodes
+    - ec2
+    - route53
+    - dns_gate
+
+- name: Assert foundry ocp_api_int_fqdn matches cluster identity (gryphon-foundry output contract)
+  ansible.builtin.assert:
+    that:
+      - (foundry_ocp_api_int_fqdn | lower) == (('api-int.' ~ cluster_name ~ '.' ~ _forge_base_domain_stripped) | lower)
+    fail_msg: >-
+      gryphon-foundry ocp_api_int_fqdn is "{{ foundry_ocp_api_int_fqdn }}" but Forge expects api-int.{{ cluster_name }}.{{ _forge_base_domain_stripped }}.
+      Align module.ocp_upi.cluster_name and ocp_base_domain in gryphon-foundry; regenerate terraform output -json.
+  vars:
+    _forge_base_domain_stripped: "{{ base_domain | regex_replace('\\.$', '') }}"
+  when: foundry_ocp_api_int_fqdn | default('') | trim | length > 0
+  tags:
+    - aws_nodes
+    - ec2
+    - route53
+    - dns_gate
+
+- name: Fetch Route53 hosted zone details (VPC association)
+  amazon.aws.route53_info:
+    query: hosted_zone
+    hosted_zone_method: details
+    hosted_zone_id: "{{ foundry_internal_hosted_zone_id }}"
+    region: "{{ foundry_region }}"
+  register: aws_nodes_dns_gate_zone
+  tags:
+    - aws_nodes
+    - ec2
+    - route53
+    - dns_gate
+
+- name: Derive VPC IDs associated with the private hosted zone
+  ansible.builtin.set_fact:
+    aws_nodes_dns_gate_zone_vpc_ids: >-
+      {{
+        (
+          (aws_nodes_dns_gate_zone.VPCs | default(aws_nodes_dns_gate_zone.vpcs | default([])))
+          | selectattr('VPCId', 'defined')
+          | map(attribute='VPCId')
+          | list
+        )
+        + (
+          (aws_nodes_dns_gate_zone.VPCs | default(aws_nodes_dns_gate_zone.vpcs | default([])))
+          | selectattr('vpc_id', 'defined')
+          | map(attribute='vpc_id')
+          | list
+        )
+        | unique
+        | list
+      }}
+  tags:
+    - aws_nodes
+    - ec2
+    - route53
+    - dns_gate
+
+- name: Assert private zone is associated with the Vault VPC (VPC resolver visibility)
+  ansible.builtin.assert:
+    that:
+      - aws_nodes_dns_gate_zone_vpc_ids | length > 0
+      - foundry_vpc_id in aws_nodes_dns_gate_zone_vpc_ids
+    fail_msg: >-
+      Route53 hosted zone {{ foundry_internal_hosted_zone_id }} is not associated with vault VPC {{ foundry_vpc_id }}
+      (associated VPCs: {{ aws_nodes_dns_gate_zone_vpc_ids | join(', ') }}). RHCOS nodes query AmazonProvidedDNS at the
+      VPC base + 2 (e.g. 10.1.0.2 for 10.1.0.0/16); they only see records in private zones linked to this VPC.
+      In gryphon-foundry, associate the internal zone with the Vault VPC or emit the zone ID that is already linked.
+  tags:
+    - aws_nodes
+    - ec2
+    - route53
+    - dns_gate
+
+- name: List Route53 records at api-int name (alias to API NLB)
+  amazon.aws.route53_info:
+    query: record_sets
+    hosted_zone_id: "{{ foundry_internal_hosted_zone_id }}"
+    start_record_name: "api-int.{{ cluster_name }}.{{ base_domain }}"
+    type: A
+    max_items: 25
+    region: "{{ foundry_region }}"
+  register: aws_nodes_dns_gate_api_int_rr
+  tags:
+    - aws_nodes
+    - ec2
+    - route53
+    - dns_gate
+
+- name: List Route53 records at api name
+  amazon.aws.route53_info:
+    query: record_sets
+    hosted_zone_id: "{{ foundry_internal_hosted_zone_id }}"
+    start_record_name: "api.{{ cluster_name }}.{{ base_domain }}"
+    type: A
+    max_items: 25
+    region: "{{ foundry_region }}"
+  register: aws_nodes_dns_gate_api_rr
+  tags:
+    - aws_nodes
+    - ec2
+    - route53
+    - dns_gate
+
+- name: Assert api-int A/ALIAS record exists before worker launch
+  ansible.builtin.assert:
+    that:
+      - aws_nodes_dns_gate_api_int_matches | length > 0
+    fail_msg: >-
+      No Route53 record for {{ aws_nodes_dns_gate_api_int_fqdn }} in zone {{ foundry_internal_hosted_zone_id }}.
+      Workers need Ignition from https://api-int.{{ cluster_name }}.{{ base_domain }}:22623/config/worker — create
+      this alias to the {{ cluster_name }}-api NLB before starting workers (Forge: run load_balancers + route53 tasks first).
+      Also verify cluster_name and base_domain match install-config / metadata
+      (foundry ocp_cluster_name / ocp_base_domain overrides apply in deploy_cluster.yml).
+  vars:
+    aws_nodes_dns_gate_api_int_fqdn: "api-int.{{ cluster_name }}.{{ base_domain }}."
+    aws_nodes_dns_gate_api_int_matches: >-
+      {{
+        aws_nodes_dns_gate_api_int_rr.resource_record_sets | default([])
+        | selectattr('name', 'defined')
+        | selectattr('name', 'equalto', aws_nodes_dns_gate_api_int_fqdn)
+        | list
+      }}
+  tags:
+    - aws_nodes
+    - ec2
+    - route53
+    - dns_gate
+
+- name: Assert api A/ALIAS record exists before worker launch
+  ansible.builtin.assert:
+    that:
+      - aws_nodes_dns_gate_api_matches | length > 0
+    fail_msg: >-
+      No Route53 record for {{ aws_nodes_dns_gate_api_fqdn }} in zone {{ foundry_internal_hosted_zone_id }}.
+      The api name should alias the same internal API NLB as api-int for a consistent install.
+  vars:
+    aws_nodes_dns_gate_api_fqdn: "api.{{ cluster_name }}.{{ base_domain }}."
+    aws_nodes_dns_gate_api_matches: >-
+      {{
+        aws_nodes_dns_gate_api_rr.resource_record_sets | default([])
+        | selectattr('name', 'defined')
+        | selectattr('name', 'equalto', aws_nodes_dns_gate_api_fqdn)
+        | list
+      }}
+  tags:
+    - aws_nodes
+    - ec2
+    - route53
+    - dns_gate
+
+- name: Resolve Amazon VPC DNS address for optional resolver checks
+  ansible.builtin.set_fact:
+    aws_nodes_dns_gate_vpc_resolver_ip_effective: >-
+      {{
+        (aws_nodes_dns_gate_vpc_resolver_ip | default('') | trim | length > 0)
+        | ternary(
+            aws_nodes_dns_gate_vpc_resolver_ip | trim,
+            (
+              (foundry_vault_amazon_provided_dns | default('') | trim | length > 0)
+              | ternary(
+                  foundry_vault_amazon_provided_dns | trim,
+                  (
+                    (aws_nodes_dns_gate_derive_vpc_resolver_from_vault_cidr | bool)
+                    | ternary(
+                        (foundry_vault_vpc_cidr | default('10.1.0.0/16')).split('/')[0] | regex_replace('\\.[^.]+$', '.2'),
+                        ''
+                      )
+                  )
+                )
+            )
+          )
+      }}
+  tags:
+    - aws_nodes
+    - ec2
+    - route53
+    - dns_gate
+
+- name: Optional — query api-int against Amazon VPC resolver (requires network path to VPC DNS)
+  when:
+    - aws_nodes_dns_gate_vpc_resolver_query | bool
+    - aws_nodes_dns_gate_vpc_resolver_ip_effective | length > 0
+  ansible.builtin.set_fact:
+    aws_nodes_dns_gate_local_dig_api_int: >-
+      {{ lookup(
+           'community.general.dig',
+           ('api-int.' ~ cluster_name ~ '.' ~ base_domain) ~ '/A',
+           '@' + aws_nodes_dns_gate_vpc_resolver_ip_effective,
+           fail_on_error=true
+         ) }}
+  tags:
+    - aws_nodes
+    - ec2
+    - route53
+    - dns_gate
+
+- name: Optional — from bastion, query api-int against Vault VPC resolver
+  when:
+    - aws_nodes_dns_gate_delegate_vpc_resolver_query_to_bastion | bool
+    - aws_nodes_dns_gate_vpc_resolver_ip_effective | length > 0
+    - (groups['bastion'] | default([])) | length > 0
+  ansible.builtin.command:
+    argv:
+      - dig
+      - +short
+      - +time=2
+      - +tries=2
+      - "@{{ aws_nodes_dns_gate_vpc_resolver_ip_effective }}"
+      - "api-int.{{ cluster_name }}.{{ base_domain }}"
+      - A
+  register: aws_nodes_dns_gate_bastion_dig
+  changed_when: false
+  failed_when: aws_nodes_dns_gate_bastion_dig.stdout | trim | length == 0
+  delegate_to: bastion
+  tags:
+    - aws_nodes
+    - ec2
+    - route53
+    - dns_gate

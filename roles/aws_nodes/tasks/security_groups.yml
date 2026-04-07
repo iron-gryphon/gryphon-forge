@@ -1,5 +1,58 @@
 ---
 # Security groups for OpenShift UPI nodes in the Vault
+# After infraID is resolved, ec2_control_plane.yml tags these Forge SGs (not foundry extras) with kubernetes.io/cluster/<infraID>=owned for AWS CCM.
+# ec2_control_plane.yml also uses foundry_vault_api_security_group_id / foundry_vault_security_group_id on bootstrap/master ENIs when present
+# in foundry_output.json so ENIs match gryphon-foundry Terraform (API/MCS/etcd on vault_api; broad VPC on vault).
+# API/MCS (6443, 22623) must allow from Vault VPC CIDR for NLB health checks (NLB has no SG).
+# Ingress NLB registers targets on TCP 80/443 (router default/hostNetwork); worker (and compact master) SGs must allow
+# those ports from the Vault VPC CIDR so health checks succeed.
+# Bootstrap etcd (2379 client, 2380 peer) must allow ingress from the Vault VPC (and from the master SG)
+# so control-plane nodes can join the bootstrap etcd before the static pods migrate to in-cluster etcd.
+# Bootstrap and master SGs use foundry_vault_vpc_cidr for control-plane ports (not only 10.0.0.0/8).
+# When foundry_bastion_security_group_id is set, also allow from bastion for API traffic.
+# SSH to RHCOS bootstrap: user core, key from install (same as ec2_key_name). Allow Nest CIDR + bastion SG
+# so ssh from the foundry bastion over peering matches API/MCS (not only hardcoded 10.0.0.0/8).
+# Master SSH uses the same Nest / bastion SG / RFC1918 sources as bootstrap so the bastion can reach :22 on control plane nodes.
+# Worker SSH uses the same sources so the bastion can reach :22 on workers (Nest CIDR / bastion SG when applicable).
+#
+# Prefer the live VPC IPv4 CIDR from EC2 (authoritative). A stale/wrong foundry_vault_vpc_cidr breaks
+# NLB health checks (all targets unhealthy) while SSH may still work via 10.0.0.0/8 or Nest rules.
+#
+# OVN-Kubernetes (default CNI on modern OCP) encapsulates pod traffic between nodes over GENEVE on UDP 6081
+# (node primary interface IPs). Without ingress on 6081 within the VPC, cross-node pod paths break—for example
+# router-default (hostNetwork on workers) to console pods on masters can hang while ingress NLB targets stay healthy.
+# Aligns with openshift/installer AWS security group templates and Red Hat networking docs on GENEVE/OVN.
+
+- name: Look up Vault VPC IPv4 CIDR from AWS for security group rules
+  amazon.aws.ec2_vpc_net_info:
+    vpc_ids:
+      - "{{ foundry_vpc_id }}"
+    region: "{{ foundry_region }}"
+  register: aws_nodes_vpc_net_lookup
+  delegate_to: localhost
+  run_once: true
+  failed_when: false
+
+- name: Set effective Vault VPC CIDR for control-plane security group rules
+  ansible.builtin.set_fact:
+    aws_nodes_effective_vault_vpc_cidr: >-
+      {{
+        (
+          aws_nodes_vpc_net_lookup.vpcs[0].cidr_block
+          if (aws_nodes_vpc_net_lookup.vpcs | default([]) | length) > 0
+          else foundry_vault_vpc_cidr | default('10.1.0.0/16')
+        )
+      }}
+
+- name: Warn when Terraform foundry vault CIDR disagrees with AWS (SG rules use AWS value)
+  ansible.builtin.debug:
+    msg: >-
+      foundry_vault_vpc_cidr is {{ foundry_vault_vpc_cidr | default('(unset)') }} but EC2 reports
+      {{ aws_nodes_effective_vault_vpc_cidr }} for vpc {{ foundry_vpc_id }}. Using the AWS CIDR for
+      bootstrap/master rules so NLB health checks match.
+  when:
+    - (foundry_vault_vpc_cidr | default('') | length) > 0
+    - foundry_vault_vpc_cidr != aws_nodes_effective_vault_vpc_cidr
 
 - name: Create bootstrap security group
   amazon.aws.ec2_security_group:
@@ -7,22 +60,114 @@
     description: "Bootstrap node for {{ cluster_name }}"
     vpc_id: "{{ foundry_vpc_id }}"
     state: present
-    rules:
-      - proto: tcp
-        from_port: 22
-        to_port: 22
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "SSH from VPC"
-      - proto: tcp
-        from_port: 6443
-        to_port: 6443
-        group_id: "{{ foundry_bastion_security_group_id }}"
-        rule_desc: "API from bastion"
-      - proto: tcp
-        from_port: 22623
-        to_port: 22623
-        group_id: "{{ foundry_bastion_security_group_id }}"
-        rule_desc: "MCS from bastion"
+    rules: >-
+      {{
+        [
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'SSH from Vault VPC'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': '10.0.0.0/8',
+            'rule_desc': 'SSH from 10.0.0.0/8 (VPN or legacy Nest in 10/8)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': '172.16.0.0/12',
+            'rule_desc': 'SSH from 172.16.0.0/12 (Nest or admin in RFC1918)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': '192.168.0.0/16',
+            'rule_desc': 'SSH from 192.168.0.0/16 (Nest or admin in RFC1918)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 6443,
+            'to_port': 6443,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'API from Vault (NLB health checks)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22623,
+            'to_port': 22623,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'MCS from Vault (NLB health checks)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 2379,
+            'to_port': 2380,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'etcd client/peer from Vault (masters join bootstrap etcd)'
+          }
+        ]
+        + (
+          [
+            {
+              'proto': 'tcp',
+              'from_port': 22,
+              'to_port': 22,
+              'group_id': foundry_bastion_security_group_id,
+              'rule_desc': 'SSH from bastion security group'
+            },
+            {
+              'proto': 'tcp',
+              'from_port': 6443,
+              'to_port': 6443,
+              'group_id': foundry_bastion_security_group_id,
+              'rule_desc': 'API from bastion'
+            },
+            {
+              'proto': 'tcp',
+              'from_port': 22623,
+              'to_port': 22623,
+              'group_id': foundry_bastion_security_group_id,
+              'rule_desc': 'MCS from bastion'
+            }
+          ]
+          if foundry_bastion_security_group_id | default('') | length > 0
+          else []
+        )
+        + (
+          [
+            {
+              'proto': 'tcp',
+              'from_port': 22,
+              'to_port': 22,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'SSH from Nest (bastion via peering)'
+            },
+            {
+              'proto': 'tcp',
+              'from_port': 6443,
+              'to_port': 6443,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'API from Nest (bastion via peering)'
+            },
+            {
+              'proto': 'tcp',
+              'from_port': 22623,
+              'to_port': 22623,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'MCS from Nest (bastion via peering)'
+            }
+          ]
+          if foundry_nest_vpc_cidr | default('') | length > 0
+          else []
+        )
+      }}
     tags:
       Name: "{{ cluster_name }}-bootstrap-sg"
       cluster: "{{ cluster_name }}"
@@ -37,36 +182,147 @@
     description: "Control plane nodes for {{ cluster_name }}"
     vpc_id: "{{ foundry_vpc_id }}"
     state: present
-    rules:
-      - proto: tcp
-        from_port: 22
-        to_port: 22
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "SSH from VPC"
-      - proto: tcp
-        from_port: 6443
-        to_port: 6443
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "API from VPC"
-      - proto: tcp
-        from_port: 2379
-        to_port: 2380
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "etcd"
-      - proto: tcp
-        from_port: 10250
-        to_port: 10250
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "Kubelet"
-      - proto: tcp
-        from_port: 22623
-        to_port: 22623
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "MCS"
+    rules: >-
+      {{
+        [
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'SSH from Vault VPC'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': '10.0.0.0/8',
+            'rule_desc': 'SSH from 10.0.0.0/8 (VPN or legacy Nest in 10/8)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': '172.16.0.0/12',
+            'rule_desc': 'SSH from 172.16.0.0/12 (Nest or admin in RFC1918)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': '192.168.0.0/16',
+            'rule_desc': 'SSH from 192.168.0.0/16 (Nest or admin in RFC1918)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 6443,
+            'to_port': 6443,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'API + OAuth express (API NLB :6443/:443 to masters :6443)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 2379,
+            'to_port': 2380,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'etcd from Vault VPC'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 10250,
+            'to_port': 10250,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'Kubelet from Vault VPC'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22623,
+            'to_port': 22623,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'MCS from Vault (NLB health checks)'
+          },
+          {
+            'proto': 'udp',
+            'from_port': 6081,
+            'to_port': 6081,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'OVN-Kubernetes GENEVE between nodes'
+          },
+        ]
+        + (
+          [
+            {
+              'proto': 'tcp',
+              'from_port': 80,
+              'to_port': 80,
+              'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+              'rule_desc': 'Ingress NLB / router hostNetwork from Vault VPC'
+            },
+            {
+              'proto': 'tcp',
+              'from_port': 443,
+              'to_port': 443,
+              'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+              'rule_desc': 'Ingress NLB / router hostNetwork from Vault VPC'
+            },
+          ]
+          if (aws_nodes_ingress_register_masters_when_no_workers | bool)
+            and (((worker_count | default(0) | int) + (gpu_worker_count | default(0) | int)) == 0)
+          else []
+        )
+        + (
+          [
+            {
+              'proto': 'tcp',
+              'from_port': 22,
+              'to_port': 22,
+              'group_id': foundry_bastion_security_group_id,
+              'rule_desc': 'SSH from bastion security group'
+            },
+          ]
+          if foundry_bastion_security_group_id | default('') | length > 0
+          else []
+        )
+        + (
+          [
+            {
+              'proto': 'tcp',
+              'from_port': 22,
+              'to_port': 22,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'SSH from Nest (bastion via peering)'
+            },
+          ]
+          if foundry_nest_vpc_cidr | default('') | length > 0
+          else []
+        )
+      }}
     tags:
       Name: "{{ cluster_name }}-master-sg"
       cluster: "{{ cluster_name }}"
   register: aws_nodes_master_sg
+  tags:
+    - aws_nodes
+    - security_groups
+
+# Explicit ingress from the control-plane SG (in addition to Vault CIDR above) matches OpenShift AWS UPI
+# security templates and survives nonstandard VPC addressing without widening bootstrap etcd to the whole VPC.
+- name: Allow bootstrap etcd from control-plane security group
+  amazon.aws.ec2_security_group:
+    name: "{{ cluster_name }}-bootstrap-sg"
+    description: "Bootstrap node for {{ cluster_name }}"
+    vpc_id: "{{ foundry_vpc_id }}"
+    region: "{{ foundry_region }}"
+    state: present
+    purge_rules: false
+    purge_tags: false
+    rules:
+      - proto: tcp
+        from_port: 2379
+        to_port: 2380
+        group_id:
+          - "{{ aws_nodes_master_sg.group_id }}"
+        rule_desc: etcd client/peer from control-plane SG
   tags:
     - aws_nodes
     - security_groups
@@ -77,26 +333,130 @@
     description: "Worker nodes for {{ cluster_name }}"
     vpc_id: "{{ foundry_vpc_id }}"
     state: present
-    rules:
-      - proto: tcp
-        from_port: 22
-        to_port: 22
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "SSH from VPC"
-      - proto: tcp
-        from_port: 10250
-        to_port: 10250
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "Kubelet"
-      - proto: tcp
-        from_port: 30000
-        to_port: 32767
-        cidr_ip: "10.0.0.0/8"
-        rule_desc: "NodePort services"
+    rules: >-
+      {{
+        [
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'SSH from Vault VPC'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': '10.0.0.0/8',
+            'rule_desc': 'SSH from 10.0.0.0/8 (VPN or legacy Nest in 10/8)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': '172.16.0.0/12',
+            'rule_desc': 'SSH from 172.16.0.0/12 (Nest or admin in RFC1918)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 22,
+            'to_port': 22,
+            'cidr_ip': '192.168.0.0/16',
+            'rule_desc': 'SSH from 192.168.0.0/16 (Nest or admin in RFC1918)'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 80,
+            'to_port': 80,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'Ingress NLB / router hostNetwork from Vault VPC'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 443,
+            'to_port': 443,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'Ingress NLB / router hostNetwork from Vault VPC'
+          },
+          {
+            'proto': 'udp',
+            'from_port': 6081,
+            'to_port': 6081,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'OVN-Kubernetes GENEVE between nodes'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 10250,
+            'to_port': 10250,
+            'cidr_ip': '10.0.0.0/8',
+            'rule_desc': 'Kubelet'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 30000,
+            'to_port': 32767,
+            'cidr_ip': '10.0.0.0/8',
+            'rule_desc': 'NodePort services'
+          },
+        ]
+        + (
+          [
+            {
+              'proto': 'tcp',
+              'from_port': 22,
+              'to_port': 22,
+              'group_id': foundry_bastion_security_group_id,
+              'rule_desc': 'SSH from bastion security group'
+            },
+          ]
+          if foundry_bastion_security_group_id | default('') | length > 0
+          else []
+        )
+        + (
+          [
+            {
+              'proto': 'tcp',
+              'from_port': 22,
+              'to_port': 22,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'SSH from Nest (bastion via peering)'
+            },
+          ]
+          if foundry_nest_vpc_cidr | default('') | length > 0
+          else []
+        )
+      }}
     tags:
       Name: "{{ cluster_name }}-worker-sg"
       cluster: "{{ cluster_name }}"
   register: aws_nodes_worker_sg
+  tags:
+    - aws_nodes
+    - security_groups
+
+- name: Create ingress ALB security group
+  amazon.aws.ec2_security_group:
+    name: "{{ cluster_name }}-ingress-alb-sg"
+    description: "Ingress ALB for {{ cluster_name }}"
+    vpc_id: "{{ foundry_vpc_id }}"
+    state: present
+    rules:
+      - proto: tcp
+        from_port: 443
+        to_port: 443
+        cidr_ip: "{{ aws_nodes_effective_vault_vpc_cidr }}"
+        rule_desc: "HTTPS from VPC"
+      - proto: tcp
+        from_port: 80
+        to_port: 80
+        cidr_ip: "{{ aws_nodes_effective_vault_vpc_cidr }}"
+        rule_desc: "HTTP from VPC"
+    tags:
+      Name: "{{ cluster_name }}-ingress-alb-sg"
+      cluster: "{{ cluster_name }}"
+  register: aws_nodes_ingress_alb_sg
+  when: foundry_ingress_certificate_arn | default('') | length > 0
   tags:
     - aws_nodes
     - security_groups
@@ -106,6 +466,7 @@
     aws_nodes_bootstrap_sg_id: "{{ aws_nodes_bootstrap_sg.group_id }}"
     aws_nodes_master_sg_id: "{{ aws_nodes_master_sg.group_id }}"
     aws_nodes_worker_sg_id: "{{ aws_nodes_worker_sg.group_id }}"
+    aws_nodes_ingress_alb_sg_id: "{{ (aws_nodes_ingress_alb_sg | default({})).group_id | default('') }}"
   tags:
     - aws_nodes
     - security_groups

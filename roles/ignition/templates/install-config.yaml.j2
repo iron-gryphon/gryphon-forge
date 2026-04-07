@@ -1,0 +1,85 @@
+{# hostedZone: keep Jinja out of the platform.aws mapping body — mid-block tags broke openshift-install YAML parse (line 8: did not find expected key). #}
+{% set _fihz = foundry_internal_hosted_zone_id | default(none) %}
+{% set _route53_private_zone = (
+  (_fihz['value'] | string | trim)
+  if (_fihz is mapping and _fihz.get('value', '') | string | trim | length > 0)
+  else ((_fihz | string | trim) if (_fihz is string) else '')
+) %}
+apiVersion: v1
+baseDomain: {{ base_domain }}
+metadata:
+  name: {{ cluster_name }}
+platform:
+  aws:
+    region: {{ foundry_region }}
+    subnets: {{ foundry_private_subnets }}
+{% if _route53_private_zone | length > 0 %}
+    hostedZone: "{{ _route53_private_zone }}"
+{% endif %}
+networking:
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  machineNetwork:
+  - cidr: {{ foundry_vault_vpc_cidr | default('10.1.0.0/16') }}
+  networkType: OVNKubernetes
+  serviceNetwork:
+  - 172.30.0.0/16
+publish: Internal
+pullSecret: |-
+{{ ignition_pull_secret_data | trim | indent(2, true) }}
+sshKey: |
+{{ ignition_ssh_key_data | indent(2, true) }}
+{% if ignition_mirror_registry_url_resolved | default('') | length > 0 %}
+{% if mirror_registry_use_image_digest_sources | default(true) | bool %}
+imageDigestSources:
+  - mirrors:
+      - "{{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}"
+    source: quay.io/openshift-release-dev/ocp-release
+  - mirrors:
+      - "{{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}"
+    source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+{% for item in mirror_registry_extra_image_content_sources | default([]) %}
+  - mirrors:
+{% for m in item.mirrors %}
+      - "{{ m }}"
+{% endfor %}
+    source: {{ item.source }}
+{% endfor %}
+{% else %}
+imageContentSources:
+  - mirrors:
+      - "{{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}"
+    source: quay.io/openshift-release-dev/ocp-release
+  - mirrors:
+      - "{{ ignition_mirror_registry_url_resolved }}/{{ mirror_registry_release_path | default('openshift/release') }}"
+    source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+{% for item in mirror_registry_extra_image_content_sources | default([]) %}
+  - mirrors:
+{% for m in item.mirrors %}
+      - "{{ m }}"
+{% endfor %}
+    source: {{ item.source }}
+{% endfor %}
+{% endif %}
+{% endif %}
+{% if ignition_install_config_trust_pem | default('') | trim | length > 0 %}
+additionalTrustBundle: |
+{{ ignition_install_config_trust_pem | trim | indent(2, true) }}
+{% if ignition_trust_bundle_oauth_pem | default('') | trim | length > 0 %}
+additionalTrustBundlePolicy: Always
+{% endif %}
+{% endif %}
+controlPlane:
+  name: master
+  replicas: {{ master_count }}
+  platform:
+    aws:
+      type: {{ master_instance_type }}
+{# UPI: compute replicas 0 per openshift-install AWS docs; Forge provisions workers via worker.ign (worker_count). #}
+compute:
+  - name: worker
+    replicas: 0
+    platform:
+      aws:
+        type: {{ worker_instance_type }}

@@ -1,0 +1,322 @@
+---
+# Install openshift-install + oc under install_dir/bin from forge_ocp_mirror_* (same channel as bastion).
+# Sets host facts openshift_install_cmd and openshift_client_cmd for later plays (localhost).
+
+- name: Stat openshift-install under install_dir
+  ansible.builtin.stat:
+    path: "{{ install_dir }}/bin/openshift-install"
+  register: ignition_ocp_install_in_dir_stat
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Stat oc under install_dir
+  ansible.builtin.stat:
+    path: "{{ install_dir }}/bin/oc"
+  register: ignition_ocp_oc_in_dir_stat
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Stat user-pinned openshift-install binary
+  ansible.builtin.stat:
+    path: "{{ openshift_install_binary_path }}"
+  register: ignition_ocp_install_pin_stat
+  when: openshift_install_binary_path | default('') | length > 0
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Stat user-pinned oc binary
+  ansible.builtin.stat:
+    path: "{{ openshift_client_binary_path }}"
+  register: ignition_ocp_oc_pin_stat
+  when: openshift_client_binary_path | default('') | length > 0
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Require pinned openshift-install path to exist
+  ansible.builtin.assert:
+    that:
+      - ignition_ocp_install_pin_stat.stat.exists | default(false)
+      - ignition_ocp_install_pin_stat.stat.isreg | default(false) or ignition_ocp_install_pin_stat.stat.islnk | default(false)
+      - ignition_ocp_install_pin_stat.stat.executable | default(false)
+    fail_msg: >-
+      openshift_install_binary_path={{ openshift_install_binary_path }} is missing or not executable.
+  when: openshift_install_binary_path | default('') | length > 0
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Require pinned oc path to exist
+  ansible.builtin.assert:
+    that:
+      - ignition_ocp_oc_pin_stat.stat.exists | default(false)
+      - ignition_ocp_oc_pin_stat.stat.isreg | default(false) or ignition_ocp_oc_pin_stat.stat.islnk | default(false)
+      - ignition_ocp_oc_pin_stat.stat.executable | default(false)
+    fail_msg: >-
+      openshift_client_binary_path={{ openshift_client_binary_path }} is missing or not executable.
+  when: openshift_client_binary_path | default('') | length > 0
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Set mirror archive names for controller OS
+  ansible.builtin.set_fact:
+    ignition_ocp_installer_archive: "{{ _inst_arch }}"
+    ignition_ocp_client_archive: "{{ _cli_arch }}"
+  vars:
+    _inst_arch: >-
+      {{ 'openshift-install-linux.tar.gz' if ansible_facts['system'] == 'Linux' else
+         ('openshift-install-mac-arm64.tar.gz' if ansible_facts['system'] == 'Darwin' and ansible_facts['architecture'] in ['arm64', 'aarch64'] else
+         ('openshift-install-mac.tar.gz' if ansible_facts['system'] == 'Darwin' else 'unsupported')) }}
+    _cli_arch: >-
+      {{ 'openshift-client-linux.tar.gz' if ansible_facts['system'] == 'Linux' else
+         ('openshift-client-mac-arm64.tar.gz' if ansible_facts['system'] == 'Darwin' and ansible_facts['architecture'] in ['arm64', 'aarch64'] else
+         ('openshift-client-mac.tar.gz' if ansible_facts['system'] == 'Darwin' else 'unsupported')) }}
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Fail when controller cannot auto-download OCP clients
+  ansible.builtin.fail:
+    msg: >-
+      Controller OS {{ ansible_facts['system'] }}/{{ ansible_facts['architecture'] }} is not supported for automatic client download.
+      Install OpenShift {{ ocp_version }} openshift-install and oc, then set openshift_install_binary_path
+      and openshift_client_binary_path in inventory to absolute paths.
+  when:
+    - >-
+        (openshift_install_binary_path | default('') | length == 0
+        and not ignition_ocp_install_in_dir_stat.stat.exists | default(false))
+        or (openshift_client_binary_path | default('') | length == 0
+        and not ignition_ocp_oc_in_dir_stat.stat.exists | default(false))
+    - ignition_ocp_installer_archive == 'unsupported' or ignition_ocp_client_archive == 'unsupported'
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Ensure install_dir bin and download cache exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ install_dir }}/bin"
+    - "{{ install_dir }}/.forge-download-cache"
+  when:
+    - >-
+        (openshift_install_binary_path | default('') | length == 0
+        and not ignition_ocp_install_in_dir_stat.stat.exists | default(false))
+        or (openshift_client_binary_path | default('') | length == 0
+        and not ignition_ocp_oc_in_dir_stat.stat.exists | default(false))
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+# macOS: Ansible get_url uses controller Python TLS; python.org builds often lack a CA bundle.
+# Apple /usr/bin/curl uses the system trust store and verifies mirror.openshift.com normally.
+- name: Download openshift-install archive from mirror (macOS system curl)
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/curl
+      - -fSL
+      - "-o"
+      - "{{ install_dir }}/.forge-download-cache/{{ ignition_ocp_installer_archive }}"
+      - "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/{{ ignition_ocp_installer_archive }}"
+  args:
+    creates: "{{ install_dir }}/.forge-download-cache/{{ ignition_ocp_installer_archive }}"
+  when:
+    - openshift_install_binary_path | default('') | length == 0
+    - not ignition_ocp_install_in_dir_stat.stat.exists | default(false)
+    - ansible_facts['system'] == 'Darwin'
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Download openshift-install archive from mirror
+  ansible.builtin.get_url:
+    url: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/{{ ignition_ocp_installer_archive }}"
+    dest: "{{ install_dir }}/.forge-download-cache/{{ ignition_ocp_installer_archive }}"
+    mode: "0644"
+    validate_certs: "{{ forge_ocp_mirror_validate_certs | default(true) | bool }}"
+  when:
+    - openshift_install_binary_path | default('') | length == 0
+    - not ignition_ocp_install_in_dir_stat.stat.exists | default(false)
+    - ansible_facts['system'] != 'Darwin'
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Download oc archive from mirror (macOS system curl)
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/curl
+      - -fSL
+      - "-o"
+      - "{{ install_dir }}/.forge-download-cache/{{ ignition_ocp_client_archive }}"
+      - "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/{{ ignition_ocp_client_archive }}"
+  args:
+    creates: "{{ install_dir }}/.forge-download-cache/{{ ignition_ocp_client_archive }}"
+  when:
+    - openshift_client_binary_path | default('') | length == 0
+    - not ignition_ocp_oc_in_dir_stat.stat.exists | default(false)
+    - ansible_facts['system'] == 'Darwin'
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Download oc archive from mirror
+  ansible.builtin.get_url:
+    url: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/{{ ignition_ocp_client_archive }}"
+    dest: "{{ install_dir }}/.forge-download-cache/{{ ignition_ocp_client_archive }}"
+    mode: "0644"
+    validate_certs: "{{ forge_ocp_mirror_validate_certs | default(true) | bool }}"
+  when:
+    - openshift_client_binary_path | default('') | length == 0
+    - not ignition_ocp_oc_in_dir_stat.stat.exists | default(false)
+    - ansible_facts['system'] != 'Darwin'
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Extract openshift-install archive into install_dir/bin
+  ansible.builtin.shell: |
+    set -e
+    rm -rf "{{ install_dir }}/.forge-download-cache/extract-install"
+    mkdir -p "{{ install_dir }}/.forge-download-cache/extract-install"
+    tar -xzf "{{ install_dir }}/.forge-download-cache/{{ ignition_ocp_installer_archive }}" \
+      -C "{{ install_dir }}/.forge-download-cache/extract-install"
+    BIN=$(find "{{ install_dir }}/.forge-download-cache/extract-install" -name 'openshift-install' -type f | head -1)
+    if [ -z "$BIN" ]; then
+      echo "openshift-install binary not found in archive"
+      exit 1
+    fi
+    cp "$BIN" "{{ install_dir }}/bin/openshift-install"
+    chmod 0755 "{{ install_dir }}/bin/openshift-install"
+  args:
+    creates: "{{ install_dir }}/bin/openshift-install"
+  when:
+    - openshift_install_binary_path | default('') | length == 0
+    - not ignition_ocp_install_in_dir_stat.stat.exists | default(false)
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Extract oc archive into install_dir/bin
+  ansible.builtin.shell: |
+    set -e
+    rm -rf "{{ install_dir }}/.forge-download-cache/extract-oc"
+    mkdir -p "{{ install_dir }}/.forge-download-cache/extract-oc"
+    tar -xzf "{{ install_dir }}/.forge-download-cache/{{ ignition_ocp_client_archive }}" \
+      -C "{{ install_dir }}/.forge-download-cache/extract-oc"
+    BIN=$(find "{{ install_dir }}/.forge-download-cache/extract-oc" -name 'oc' -type f | head -1)
+    if [ -z "$BIN" ]; then
+      echo "oc binary not found in archive"
+      exit 1
+    fi
+    cp "$BIN" "{{ install_dir }}/bin/oc"
+    chmod 0755 "{{ install_dir }}/bin/oc"
+  args:
+    creates: "{{ install_dir }}/bin/oc"
+  when:
+    - openshift_client_binary_path | default('') | length == 0
+    - not ignition_ocp_oc_in_dir_stat.stat.exists | default(false)
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Set openshift_install_cmd and openshift_client_cmd facts  # noqa: var-naming[no-role-prefix]
+  ansible.builtin.set_fact:
+    openshift_install_cmd: "{{ _inst_cmd }}"
+    openshift_client_cmd: "{{ _cli_cmd }}"
+  vars:
+    _inst_cmd: >-
+      {{ openshift_install_binary_path if (openshift_install_binary_path | default('') | length > 0)
+         else (install_dir ~ '/bin/openshift-install') }}
+    _cli_cmd: >-
+      {{ openshift_client_binary_path if (openshift_client_binary_path | default('') | length > 0)
+         else (install_dir ~ '/bin/oc') }}
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Verify openshift-install binary is executable
+  ansible.builtin.stat:
+    path: "{{ openshift_install_cmd }}"
+  register: ignition_ocp_install_final_stat
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Verify oc binary is executable
+  ansible.builtin.stat:
+    path: "{{ openshift_client_cmd }}"
+  register: ignition_ocp_oc_final_stat
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Require openshift-install after ensure
+  ansible.builtin.assert:
+    that:
+      - ignition_ocp_install_final_stat.stat.exists | default(false)
+      - ignition_ocp_install_final_stat.stat.executable | default(false)
+    fail_msg: >-
+      openshift-install missing at {{ openshift_install_cmd }}.
+      Check mirror URL (forge_ocp_mirror_base_url / forge_ocp_mirror_channel) and network access.
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Require oc after ensure
+  ansible.builtin.assert:
+    that:
+      - ignition_ocp_oc_final_stat.stat.exists | default(false)
+      - ignition_ocp_oc_final_stat.stat.executable | default(false)
+    fail_msg: >-
+      oc missing at {{ openshift_client_cmd }}.
+      Check mirror URL (forge_ocp_mirror_base_url / forge_ocp_mirror_channel) and network access.
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2

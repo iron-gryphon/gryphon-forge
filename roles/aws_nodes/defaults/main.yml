@@ -1,3 +1,53 @@
 ---
 # AWS Nodes role defaults
 # Override ec2_key_name and rhcos_ami_id in group_vars
+
+# Root EBS for RHCOS: AMI defaults are often ~16 GiB and trigger DiskPressure during OCP 4.x install.
+# Red Hat / AWS UPI practice: gp3 root ≥120 GiB for bootstrap and control plane; workers need enough for images and kubelet ephemeral storage.
+# amazon.aws.ec2_instance applies block devices only at launch — it does not grow existing root volumes (see roles/aws_nodes/README.md).
+# Empty: resolve RootDeviceName from describe-images for aws_nodes_rhcos_ami_id_resolved (required — /dev/sda1 vs /dev/xvda is AMI-specific).
+aws_nodes_rhcos_root_device_name: ""
+# When true, after launch describe instances/volumes and assert root EBS on RootDeviceName meets aws_nodes_*_root_volume_size_gb per role tag.
+aws_nodes_verify_root_ebs_size_after_launch: false
+aws_nodes_bootstrap_root_volume_size_gb: 120
+aws_nodes_master_root_volume_size_gb: 120
+aws_nodes_worker_root_volume_size_gb: 120
+aws_nodes_gpu_worker_root_volume_size_gb: 120
+
+# OpenShift installer infraID for kubernetes.io/cluster/<infraID>=owned on EC2 (AWS CCM ClusterID). Empty = read infraID from install_dir/metadata.json.
+aws_nodes_openshift_infrastructure_id: ""
+
+# ELB target registration: retries when using EC2 describe (e.g. --tags load_balancers) — tag filters can lag after launch
+# Ingress RegisterTargets also uses these when waiting for instance IDs to reach running (pending is invalid for ELB).
+aws_nodes_lb_target_discovery_retries: 40
+aws_nodes_lb_target_discovery_delay: 8
+
+# After registering bootstrap+masters on {{ cluster_name }}-api-tg / -mcs-tg, optionally deregister stale targets.
+# Masters for this cluster (tag cluster + role=master) are never removed. Confirm mystery instance IDs with the operator
+# (aws ec2 describe-instances) before adding to aws_nodes_lb_api_mcs_prune_extra_instance_ids.
+aws_nodes_lb_prune_api_mcs_targets_enabled: true
+aws_nodes_lb_prune_api_mcs_worker_targets: true
+aws_nodes_lb_api_mcs_deregister_bootstrap: false
+aws_nodes_lb_api_mcs_prune_extra_instance_ids: []
+aws_nodes_lb_api_mcs_prune_stale_non_master_targets: true
+aws_nodes_lb_prune_api_mcs_foreign_cluster_targets: true
+
+# When worker_count and gpu_worker_count are both 0, attach masters to ingress TGs (compact / router on control plane).
+aws_nodes_ingress_register_masters_when_no_workers: true
+
+# Before worker/GPU EC2: assert api/api-int exist in foundry_internal_hosted_zone_id and the zone is associated with foundry_vpc_id
+aws_nodes_dns_gate_enabled: true
+# Optional: set explicitly (e.g. 10.1.0.2) for dig checks; when empty and derive is true, computed as <vault CIDR network host>.2
+aws_nodes_dns_gate_vpc_resolver_ip: ""
+aws_nodes_dns_gate_derive_vpc_resolver_from_vault_cidr: true
+# Requires UDP/53 reachability to the VPC resolver from the controller (VPN/peering). Default off — Route53 API checks still run.
+aws_nodes_dns_gate_vpc_resolver_query: false
+# Run dig @vpc_resolver from bastion (needs dig, routing/peering to Vault VPC DNS, and inventory group bastion)
+aws_nodes_dns_gate_delegate_vpc_resolver_query_to_bastion: false
+
+# After NLB/TG tasks, write AWS + optional bastion diagnostics under this directory (timestamped subfolder)
+aws_nodes_lb_validation_enabled: true
+aws_nodes_lb_validation_log_dir: "{{ install_dir }}/forge-lb-validation"
+# When true, LB validation writes bastion-diagnostics.txt during aws_nodes. Default false — csr_approver runs
+# the same probes only when a CSR/bootstrap/install-complete task fails (see bastion_lb_diagnostics.yml).
+aws_nodes_lb_validation_from_bastion: false

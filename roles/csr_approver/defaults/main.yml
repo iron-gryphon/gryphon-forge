@@ -1,5 +1,40 @@
 ---
 # CSR Approver role defaults
+# csr_approver_install_dir overridden by play when using bastion (bastion_install_dir)
+# csr_approver_openshift_install_cmd / csr_approver_oc_cmd set when binaries are on bastion
 
+csr_approver_install_dir: "{{ install_dir }}"
+csr_approver_openshift_install_cmd: openshift-install
+csr_approver_oc_cmd: oc
 csr_approver_csr_approval_timeout: 3600
 csr_approver_csr_check_interval: 30
+# Route53 alias + VPC resolver can lag after record create; retry before failing CSR play
+csr_approver_dns_resolution_retries: 12  # Total attempts (first try is immediate)
+csr_approver_dns_resolution_delay: 30    # Seconds between attempts after a failure
+csr_approver_connectivity_timeout: 300  # Seconds to wait for API DNS/port (bootstrap node can take 3-5 min to start)
+# api-int must expose MCS :22623 on the same NLB as :6443; masters fetch Ignition from https://api-int:22623/config/master
+csr_approver_mcs_connectivity_timeout: 300
+# When false, describe cluster api-tg from the controller before bastion wait_for (needs AWS creds on controller)
+csr_approver_skip_api_tg_preflight: false
+# When false, assert EC2 shows at least worker_count + gpu_worker_count nodes before CSR approval (needs AWS creds on controller)
+csr_approver_skip_expected_workers_ec2_preflight: false
+# NLB forwards to healthy targets only; wait from controller (same AWS API as preflight) before bastion TCP probe
+csr_approver_api_tg_healthy_retries: 45
+csr_approver_api_tg_healthy_delay: 10
+csr_approver_gather_on_failure: true  # When bootstrap fails, gather logs and fetch to controller for review
+# When true, record bastion-diagnostics.txt (aws_nodes/bastion_lb_diagnostics.yml) on any CSR role failure path
+csr_approver_bastion_lb_diagnostics_on_failure: true
+# csr_approver_gather_failure_dest: override to set custom path; default is install_dir/bootstrap-failure-logs/<cluster>-<epoch> (controller path)
+# When set and the file exists, openshift-install gather bootstrap gets --key (bastion: copied from ocp_ssh_private_key_path)
+csr_approver_ocp_ssh_identity_path: ""
+# When true and bootstrap gather runs, SSH (core) to the first master and run /dev/tcp probes to bootstrap :2379/:2380;
+# writes master-to-bootstrap-etcd-tcp.txt. Uses bastion as jump when present (private IPs), else localhost.
+csr_approver_bootstrap_etcd_master_tcp_probe: false
+# Before wait-for bootstrap-complete: SSH to first master and open /dev/tcp to bootstrap :2379 and :2380 (retries for SSH/etcd readiness).
+csr_approver_bootstrap_etcd_tcp_preflight: true
+csr_approver_etcd_tcp_preflight_retries: 36
+csr_approver_etcd_tcp_preflight_delay: 10
+# After wait-for bootstrap-complete, deregister bootstrap from {{ cluster_name }}-api-tg and -mcs-tg (AWS API on controller).
+csr_approver_deregister_bootstrap_from_api_mcs_after_complete: true
+# When true and wait-for install-complete fails: emit short console/ingress troubleshooting hints (oc/AWS/router; no secrets). See AGENTS.md (b) vs OAuth (a).
+csr_approver_emit_console_ingress_hints_on_install_failure: true
