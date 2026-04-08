@@ -36,13 +36,15 @@ After `openshift-install create manifests`, this role can patch `IngressControll
 
 `spec.endpointPublishingStrategy` is replaced or merged as above; when the NLB HostNetwork replica merge runs, **`spec.replicas`** is set on the same manifest. Other `spec` fields are preserved. Re-running the patch is idempotent for a given variable set.
 
-### OAuth hostname on the API NLB (kube-apiserver TLS / issues #23–#24)
+### OAuth hostname TLS when DNS uses the API NLB (issues #23–#24; OCP before 4.21)
 
-When **`oauth-openshift.apps.<cluster>.<domain>`** resolves to the **API NLB** (Forge default), clients see **kube-apiserver** TLS. The **cluster-authentication-operator** checks **`https://…/healthz`** with full certificate validation, so the serving cert must include that hostname in **SAN**. Forge does this with a **user-provided API serving certificate** pattern ([OpenShift API server certs](https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/security_and_compliance/user-provided-certificates-for-the-api-server)):
+When **`forge_oauth_apps_via_api_nlb`** is **true** (default for OCP versions **before 4.21**), **`oauth-openshift.apps.<cluster>.<domain>`** resolves to the **API NLB** and clients see **kube-apiserver** TLS. The **cluster-authentication-operator** checks **`https://…/healthz`** with full certificate validation, so the serving cert must include that hostname in **SAN**. Forge does this with a **user-provided API serving certificate** pattern ([OpenShift API server certs](https://docs.redhat.com/en/documentation/openshift_container_platform/latest/html/security_and_compliance/user-provided-certificates-for-the-api-server)).
+
+For **OCP 4.21+**, Forge defaults **`forge_oauth_apps_via_api_nlb`** to **false** so that hostname uses **ingress** (same as `*.apps`); **`ignition_oauth_apps_api_named_certificate`** follows that default ([issue #30](https://github.com/iron-gryphon/gryphon-forge/issues/30)).
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ignition_oauth_apps_api_named_certificate` | Generate CA + leaf, add **`APIServer`** `namedCertificates` + Secret to **`manifests/`**, merge CA into **`install-config` `additionalTrustBundle`** (**`additionalTrustBundlePolicy: Always`** when this CA is present) | `true` |
+| `ignition_oauth_apps_api_named_certificate` | Generate CA + leaf, add **`APIServer`** `namedCertificates` + Secret to **`manifests/`**, merge CA into **`install-config` `additionalTrustBundle`** (**`additionalTrustBundlePolicy: Always`** when this CA is present) | `true` when **`forge_oauth_apps_via_api_nlb`** (else `false` on 4.21+) |
 | `ignition_oauth_apps_api_serving_secret_name` | **`openshift-config`** Secret name referenced by **`APIServer`** | `forge-oauth-apps-api-serving` |
 | `ignition_oauth_apps_api_cert_validity_days` | OpenSSL validity for CA and leaf | `3650` |
 

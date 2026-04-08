@@ -110,25 +110,28 @@ Variables are overridden in the first play of `deploy_cluster.yml` from: 1) `inc
 
 ## Troubleshooting: OAuth, console, and `install-complete`
 
-OAuth and the console are **different paths**. Do not assume the OAuth/API-NLB fix below fixes **console** HTTPS or **`console-openshift-console.apps`** probes.
+OAuth and the console are **different paths**. Do not assume an OAuth/API-NLB-only fix addresses **console** HTTPS or **`console-openshift-console.apps`** probes.
 
-### (a) `oauth-openshift.apps` → API NLB `:443` (express lane) + API server TLS
+### (a) `oauth-openshift.apps` — ingress (4.21+ default) vs API NLB express lane (older OCP)
 
-The **cluster-authentication-operator** often reconciles the `oauth-openshift` **Route** with `spec.port.targetPort` **`6443`** (pod port) while the **Service** publishes **`443` → 6443**. If that hostname resolves to the **default ingress** (wildcard `*.apps`), passthrough traffic hits the **router** on workers targeting pod port **6443**, where there is no matching backend — symptoms include stalled `install-complete` on **authentication**, OAuth failures, and TLS **unexpected EOF** ([issues #23](https://github.com/iron-gryphon/gryphon-forge/issues/23) and [#24](https://github.com/iron-gryphon/gryphon-forge/issues/24)). This path does **not** explain **`console-openshift-console.apps`** **503** from the **console** cluster operator; the console route uses **ingress**, described in **(b)**.
+The **cluster-authentication-operator** often reconciles the `oauth-openshift` **Route** with `spec.port.targetPort` **`6443`** (pod port) while the **Service** publishes **`443` → 6443**. If that hostname resolves to the **ingress router** with that passthrough shape, the router must forward to **oauth-openshift** pod backends correctly. Historically, pointing **`oauth-openshift.apps`** at the **default `*.apps`** ingress broke because traffic hit the router on **6443** without a valid backend — stalled **`install-complete`** on **authentication**, OAuth failures, TLS **unexpected EOF** ([issues #23](https://github.com/iron-gryphon/gryphon-forge/issues/23) and [#24](https://github.com/iron-gryphon/gryphon-forge/issues/24)).
 
-**Forge’s fix for (a) (infrastructure; do not patch the OAuth Route):**
+**OpenShift 4.21+** ([issue #30](https://github.com/iron-gryphon/gryphon-forge/issues/30)): if **`oauth-openshift.apps`** resolves to the **API NLB** (kube-apiserver on **6443**), unauthenticated **`GET /oauth/authorize`** can return **403** (`system:anonymous`), and **console login** fails. Forge therefore defaults **`forge_oauth_apps_via_api_nlb`** to **`false`** for **`ocp_version`** **4.21 and later**: **Route53** aliases **`oauth-openshift.apps.<cluster>.<domain>`** to the **same target as `*.apps`** (ingress NLB or ACM ALB). Browsers then see **ingress/router TLS** for that hostname (trust that chain like other app routes). **`ignition_oauth_apps_api_named_certificate`** defaults the same way (no APIServer named cert for OAuth when DNS uses ingress).
+
+**Older OCP (Forge default `forge_oauth_apps_via_api_nlb: true`):** keep the **API NLB express lane** (infrastructure; do not patch the OAuth Route):
 
 1. **API NLB** (`<cluster>-api`) exposes TCP **443** forwarding to **`<cluster>-oauth-tg`**, which registers **control-plane** instances on **6443** (same kube-apiserver path as the API).
-2. **Route53** — explicit alias **`oauth-openshift.apps.<cluster>.<domain>`** → **API NLB** (more specific than `*.apps`, so OAuth DNS does not use the ingress NLB/ALB).
-3. **Control-plane security groups** already allow **6443** from the Vault VPC CIDR (NLB health checks and forwarded traffic).
-4. After **`wait-for bootstrap-complete`**, **csr_approver** deregisters the **bootstrap** instance from **`<cluster>-api-tg`** and **`<cluster>-mcs-tg`** (toggle: `csr_approver_deregister_bootstrap_from_api_mcs_after_complete`).
-5. **TLS** — traffic to **`oauth-openshift.apps…`** is still **kube-apiserver** on **6443**, so the server must present a certificate whose **SAN** includes that hostname. Forge’s **ignition** role adds **`APIServer`** `spec.servingCerts.namedCertificates` (plus a **`kubernetes.io/tls`** Secret in **`openshift-config`**) and merges the issuing CA into **`install-config` `additionalTrustBundle`** with **`additionalTrustBundlePolicy: Always`**. Material: **`{{ install_dir }}/.forge/oauth-apps-api-tls/`**. Toggle: **`ignition_oauth_apps_api_named_certificate`** (default **true**).
+2. **Route53** — explicit alias **`oauth-openshift.apps.<cluster>.<domain>`** → **API NLB** (more specific than `*.apps`).
+3. **Control-plane security groups** allow **6443** from the Vault VPC CIDR (NLB health checks and forwarded traffic).
+4. After **`wait-for bootstrap-complete`**, **csr_approver** deregisters **bootstrap** from **`<cluster>-api-tg`** and **`<cluster>-mcs-tg`** (toggle: `csr_approver_deregister_bootstrap_from_api_mcs_after_complete`). The **oauth-tg** remains on masters.
+5. **TLS** — traffic to **`oauth-openshift.apps…`** is **kube-apiserver** on **6443**, so the server must present a **SAN** for that hostname. The **ignition** role adds **`APIServer`** `spec.servingCerts.namedCertificates` plus a **`kubernetes.io/tls`** Secret in **`openshift-config`**, and merges the CA into **`install-config` `additionalTrustBundle`** (**`additionalTrustBundlePolicy: Always`**). Material: **`{{ install_dir }}/.forge/oauth-apps-api-tls/`**. Toggle: **`ignition_oauth_apps_api_named_certificate`**.
 
-**Check (a)**
+**Checks (a)**
 
 ```bash
 dig +short oauth-openshift.apps.<cluster>.<domain>
-aws elbv2 describe-listeners --load-balancer-arn <api-nlb-arn> --query 'Listeners[?Port==`443`]'
+# API path: listener 443 on <cluster>-api → oauth-tg. Ingress path: same targets as *.apps ingress.
+aws elbv2 describe-listeners --load-balancer-arn <api-nlb-arn> --query 'Listeners[?Port==`443`]'   # empty when express lane disabled
 oc get route oauth-openshift -n openshift-authentication -o jsonpath='{.spec.port.targetPort}{"\n"}'
 openssl s_client -connect oauth-openshift.apps.<cluster>.<domain>:443 -servername oauth-openshift.apps.<cluster>.<domain> </dev/null 2>/dev/null | openssl x509 -noout -subject -ext subjectAltName
 oc get clusteroperator authentication
@@ -136,11 +139,11 @@ oc get clusteroperator authentication
 
 **Validation** probes `https://oauth-openshift.apps.<cluster>.<domain>/` and records the result in `validation-report.txt` (`validation_check_oauth_apps_connectivity`).
 
-**Workstations and browsers** still need to trust the OAuth serving chain for that URL (Forge’s auto-generated CA, or your replacement CA). The cluster’s **`additionalTrustBundle`** path above is for **nodes and cluster components**, not end-user browser trust stores.
+**Workstations:** for the **API NLB** path, trust Forge’s OAuth/API cert chain (or your replacement). For the **ingress** path, trust the **ingress** chain. Cluster **`additionalTrustBundle`** applies to **nodes and cluster components**, not necessarily the browser.
 
 ### (b) `console-openshift-console.apps` and other routes → `*.apps` → ingress NLB/ALB
 
-The **console** operator (and most application Routes) use hostnames under **`*.apps.<cluster>.<domain>`**, which Forge points at the **ingress** load balancer (NLB or ACM ALB), **not** the API NLB. **`openshift-install wait-for install-complete`** can fail with **console** **Degraded** / **RouteHealth** when the HTTPS probe to **`https://console-openshift-console.apps…/`** returns **503** even though **ingress** target groups show healthy workers — that points to **ingress/router → console Service/backend** (or in-cluster TLS/reencrypt), **VPC/peering reachability** from a bastion outside the Vault, or other cluster issues. The **(a)** OAuth/API-NLB and **`ignition_oauth_apps_api_named_certificate`** changes do **not** reroute or fix the console URL.
+The **console** operator (and most application Routes) use hostnames under **`*.apps.<cluster>.<domain>`**, which Forge points at the **ingress** load balancer (NLB or ACM ALB), **not** the API NLB. **`openshift-install wait-for install-complete`** can fail with **console** **Degraded** / **RouteHealth** when the HTTPS probe to **`https://console-openshift-console.apps…/`** returns **503** even though **ingress** target groups show healthy workers — that points to **ingress/router → console Service/backend** (or in-cluster TLS/reencrypt), **VPC/peering reachability** from a bastion outside the Vault, or other cluster issues. The **(a)** paths and **`ignition_oauth_apps_api_named_certificate`** (when used) do **not** reroute or fix the console URL by themselves.
 
 **Useful checks (b)** — from a host that can reach Vault ingress (often a node or bastion in the right network): `oc get co console ingress`, `oc describe route console -n openshift-console`, ingress target group health in AWS for **`…-ingress-443-tg`**. For router backend detail: **`oc exec -n openshift-ingress deploy/router-default -- grep -i openshift-console /var/lib/haproxy/conf/haproxy.config`**; HAProxy stats may be on pod port **1936** if exposed.
 

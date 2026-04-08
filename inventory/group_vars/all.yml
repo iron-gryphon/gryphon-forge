@@ -35,6 +35,8 @@ foundry_ingress_certificate_arn: ""  # ACM cert ARN from foundry; when set, uses
 cluster_name: "iron-vault-01"
 base_domain: "fsi.internal"
 ocp_version: "4.21"
+# True → oauth-openshift.apps on API NLB (#23/#24). False → same as *.apps / ingress (#30). Default follows ocp_version vs 4.21.
+forge_oauth_apps_via_api_nlb: "{{ ocp_version is version('4.21', '<') }}"
 
 # --- Node Counts ---
 master_count: 3

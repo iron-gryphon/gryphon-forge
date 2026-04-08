@@ -11,7 +11,7 @@ validation_controller_install_dir: "{{ install_dir }}"
 validation_report_filename: validation-report.txt
 # After validation, pull kubeconfig and kubeadmin-password from bastion to the controller copy of install_dir
 validation_sync_auth_to_controller: true
-# Issues #23/#24: probe https://oauth-openshift.apps.<cluster>.<domain>/ (non-fatal warning on failure)
+# Probe https://oauth-openshift.apps.<cluster>.<domain>/ (path depends on forge_oauth_apps_via_api_nlb; non-fatal warning on failure)
 validation_check_oauth_apps_connectivity: true
 validation_oauth_apps_tls_verify: false
 validation_oauth_apps_timeout_seconds: 30
