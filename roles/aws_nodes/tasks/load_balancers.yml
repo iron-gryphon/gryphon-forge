@@ -1,8 +1,8 @@
 ---
 # Internal NLB for OpenShift api-int: Kubernetes API (6443) + Machine Config Server (22623) on the same DNS name.
 # Masters fetch https://api-int:22623/config/master; api-int must expose :22623 on the same LB Route53 aliases to.
-# OAuth express lane (issues #23/#24): TCP listener :443 on this NLB forwards to masters :6443 (dedicated TG).
-# Route53 A record oauth-openshift.apps.<cluster>.<domain> aliases this NLB so passthrough Routes can keep targetPort 6443.
+# OAuth express lane (issues #23/#24): when aws_nodes_oauth_apps_alias_api_nlb, TCP :443 on this NLB forwards to masters :6443.
+# OCP 4.21+ defaults to ingress DNS for oauth-openshift.apps instead (issue #30) — no :443 listener or oauth-tg then.
 # Ingress: ALB (HTTPS) when foundry provides ACM cert; else NLB (TCP passthrough)
 #
 # community.aws.elb_target_group defaults modify_targets=true; with no `targets` key it deregisters
@@ -62,6 +62,7 @@
     unhealthy_threshold_count: 2
     region: "{{ foundry_region }}"
   register: aws_nodes_oauth_tg
+  when: aws_nodes_oauth_apps_alias_api_nlb | default(true) | bool
   tags:
     - aws_nodes
     - load_balancers
@@ -76,7 +77,39 @@
     - aws_nodes
     - load_balancers
 
-- name: Create or update NLB for API (api + api-int DNS; listeners 6443, 22623, 443 OAuth express)
+- name: Build API NLB listener list (optional OAuth :443 express lane)
+  ansible.builtin.set_fact:
+    aws_nodes_api_nlb_listeners: >-
+      {{
+        [
+          {
+            'Protocol': 'TCP',
+            'Port': 6443,
+            'DefaultActions': [{'Type': 'forward', 'TargetGroupArn': aws_nodes_api_tg.target_group_arn}],
+          },
+          {
+            'Protocol': 'TCP',
+            'Port': 22623,
+            'DefaultActions': [{'Type': 'forward', 'TargetGroupArn': aws_nodes_mcs_tg.target_group_arn}],
+          },
+        ]
+        + (
+          [
+            {
+              'Protocol': 'TCP',
+              'Port': 443,
+              'DefaultActions': [{'Type': 'forward', 'TargetGroupArn': aws_nodes_oauth_tg.target_group_arn}],
+            },
+          ]
+          if (aws_nodes_oauth_apps_alias_api_nlb | default(true) | bool)
+          else []
+        )
+      }}
+  tags:
+    - aws_nodes
+    - load_balancers
+
+- name: Create or update NLB for API (api + api-int DNS; listeners 6443, 22623; optional 443 OAuth express)
   community.aws.elb_network_lb:
     name: "{{ cluster_name }}-api"
     subnets: "{{ foundry_private_subnets }}"
@@ -84,22 +117,7 @@
     # Required for multi-AZ: bootstrap is in one AZ; without cross-zone, clients that hit an NLB
     # node in another AZ see no healthy targets until masters serve 6443 → install timeouts.
     cross_zone_load_balancing: true
-    listeners:
-      - Protocol: TCP
-        Port: 6443
-        DefaultActions:
-          - Type: forward
-            TargetGroupArn: "{{ aws_nodes_api_tg.target_group_arn }}"
-      - Protocol: TCP
-        Port: 22623
-        DefaultActions:
-          - Type: forward
-            TargetGroupArn: "{{ aws_nodes_mcs_tg.target_group_arn }}"
-      - Protocol: TCP
-        Port: 443
-        DefaultActions:
-          - Type: forward
-            TargetGroupArn: "{{ aws_nodes_oauth_tg.target_group_arn }}"
+    listeners: "{{ aws_nodes_api_nlb_listeners }}"
     state: present
     region: "{{ foundry_region }}"
   register: aws_nodes_api_nlb
@@ -314,6 +332,7 @@
   when:
     - aws_nodes_master_launch is defined
     - not (aws_nodes_master_launch.skipped | default(false))
+    - aws_nodes_oauth_apps_alias_api_nlb | default(true) | bool
   tags:
     - aws_nodes
     - load_balancers
@@ -326,12 +345,15 @@
     - (aws_nodes_lb_oauth_target_ids | default([]) | length) == 0
     - aws_nodes_lb_master_query is defined
     - (aws_nodes_lb_master_query.instances | default([]) | length) > 0
+    - aws_nodes_oauth_apps_alias_api_nlb | default(true) | bool
   tags:
     - aws_nodes
     - load_balancers
 
 - name: Discover master instance IDs for OAuth target group (when EC2 tasks were skipped)
-  when: (aws_nodes_lb_oauth_target_ids | default([]) | length) == 0
+  when:
+    - (aws_nodes_lb_oauth_target_ids | default([]) | length) == 0
+    - aws_nodes_oauth_apps_alias_api_nlb | default(true) | bool
   block:
     - name: Wait for masters visible to EC2 API (OAuth express-lane TG)
       amazon.aws.ec2_instance_info:
@@ -470,6 +492,7 @@
     fail_msg: >-
       No masters to attach to {{ cluster_name }}-oauth-tg (API NLB :443 → :6443). Re-run with
       --tags 'ec2,load_balancers' or confirm tag:cluster={{ cluster_name }}, role=master in {{ foundry_region }}.
+  when: aws_nodes_oauth_apps_alias_api_nlb | default(true) | bool
   tags:
     - aws_nodes
     - load_balancers
@@ -481,6 +504,7 @@
     collect_targets_health: true
     region: "{{ foundry_region }}"
   register: aws_nodes_lb_oauth_tg_existing
+  when: aws_nodes_oauth_apps_alias_api_nlb | default(true) | bool
   tags:
     - aws_nodes
     - load_balancers
@@ -496,7 +520,9 @@
         | map(attribute='id')
         | list
       }}
-  when: aws_nodes_lb_oauth_tg_existing.target_groups | default([]) | length > 0
+  when:
+    - aws_nodes_oauth_apps_alias_api_nlb | default(true) | bool
+    - aws_nodes_lb_oauth_tg_existing.target_groups | default([]) | length > 0
   tags:
     - aws_nodes
     - load_balancers
@@ -504,7 +530,9 @@
 - name: Default empty when OAuth target group has no registrations
   ansible.builtin.set_fact:
     aws_nodes_lb_oauth_already_registered: []
-  when: aws_nodes_lb_oauth_already_registered is not defined
+  when:
+    - aws_nodes_oauth_apps_alias_api_nlb | default(true) | bool
+    - aws_nodes_lb_oauth_already_registered is not defined
   tags:
     - aws_nodes
     - load_balancers
@@ -517,6 +545,7 @@
     state: present
     region: "{{ foundry_region }}"
   loop: "{{ aws_nodes_lb_oauth_target_ids | difference(aws_nodes_lb_oauth_already_registered | default([])) }}"
+  when: aws_nodes_oauth_apps_alias_api_nlb | default(true) | bool
   tags:
     - aws_nodes
     - load_balancers

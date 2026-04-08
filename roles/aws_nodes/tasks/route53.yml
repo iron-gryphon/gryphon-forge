@@ -35,8 +35,17 @@
     - aws_nodes
     - route53
 
-# More specific than *.apps — only oauth-openshift.apps aliases the API NLB (:443 → oauth-tg → apiserver :6443). Console and other apps use *.apps → ingress.
-- name: Create oauth-openshift apps Route53 record (alias to API NLB)
+- name: Get Ingress ALB info
+  amazon.aws.elb_application_lb_info:
+    names: "{{ cluster_name }}-ingress"
+  register: aws_nodes_ingress_lb_info
+  when: foundry_ingress_certificate_arn | default('') | length > 0
+  tags:
+    - aws_nodes
+    - route53
+
+# oauth-openshift.apps: OCP < 4.21 — explicit alias to API NLB (issues #23/#24). OCP 4.21+ — same target as *.apps (ingress; issue #30).
+- name: Create oauth-openshift apps Route53 record (alias to API NLB express lane)
   amazon.aws.route53:
     hosted_zone_id: "{{ foundry_internal_hosted_zone_id }}"
     record: "oauth-openshift.apps.{{ cluster_name }}.{{ base_domain }}"
@@ -47,16 +56,48 @@
     value: "{{ aws_nodes_api_nlb.load_balancer.dns_name }}"
     state: present
     overwrite: true
-  when: aws_nodes_api_nlb.load_balancer is defined
+  when:
+    - aws_nodes_api_nlb.load_balancer is defined
+    - aws_nodes_oauth_apps_alias_api_nlb | default(true) | bool
   tags:
     - aws_nodes
     - route53
 
-- name: Get Ingress ALB info
-  amazon.aws.elb_application_lb_info:
-    names: "{{ cluster_name }}-ingress"
-  register: aws_nodes_ingress_lb_info
-  when: foundry_ingress_certificate_arn | default('') | length > 0
+- name: Create oauth-openshift apps Route53 record (alias to ingress ALB)
+  amazon.aws.route53:
+    hosted_zone_id: "{{ foundry_internal_hosted_zone_id }}"
+    record: "oauth-openshift.apps.{{ cluster_name }}.{{ base_domain }}"
+    type: A
+    alias: true
+    alias_hosted_zone_id: "{{ aws_nodes_ingress_lb_info.load_balancers[0].canonical_hosted_zone_id }}"
+    alias_evaluate_target_health: false
+    value: "{{ aws_nodes_ingress_lb_info.load_balancers[0].dns_name }}"
+    state: present
+    overwrite: true
+  when:
+    - not (aws_nodes_oauth_apps_alias_api_nlb | default(true) | bool)
+    - foundry_ingress_certificate_arn | default('') | length > 0
+    - aws_nodes_ingress_lb_info.load_balancers | default([]) | length > 0
+  tags:
+    - aws_nodes
+    - route53
+
+- name: Create oauth-openshift apps Route53 record (alias to ingress NLB)
+  amazon.aws.route53:
+    hosted_zone_id: "{{ foundry_internal_hosted_zone_id }}"
+    record: "oauth-openshift.apps.{{ cluster_name }}.{{ base_domain }}"
+    type: A
+    alias: true
+    alias_hosted_zone_id: "{{ aws_nodes_ingress_nlb.load_balancer.canonical_hosted_zone_id }}"
+    alias_evaluate_target_health: false
+    value: "{{ aws_nodes_ingress_nlb.load_balancer.dns_name }}"
+    state: present
+    overwrite: true
+  when:
+    - not (aws_nodes_oauth_apps_alias_api_nlb | default(true) | bool)
+    - foundry_ingress_certificate_arn | default('') | length == 0
+    - aws_nodes_ingress_nlb is defined
+    - aws_nodes_ingress_nlb.load_balancer is defined
   tags:
     - aws_nodes
     - route53
