@@ -609,7 +609,7 @@
       # Pending CSRs: match Red Hat UPI pattern (CSRs with no .status), not jsonpath status.conditions==null.
       CSR_PENDING_TEMPLATE='{% raw %}{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}{% endraw %}'
 
-      # OAuth (only): API NLB :443 → oauth-tg → masters :6443 + Route53 oauth-openshift.apps (issues #23/#24). Console uses *.apps → ingress, not this path.
+      # OAuth DNS: 4.21+ defaults ingress (*.apps; #30). Older: API NLB :443 oauth-tg (#23/#24). Console → *.apps ingress.
       # No oc patch of Route oauth-openshift — cluster-authentication-operator remains source of truth.
 
       (
@@ -654,10 +654,10 @@
         aws_nodes_bastion_lb_diag_output_dir: "{{ csr_approver_install_dir }}/csr-fail/{{ cluster_name }}-{{ ansible_date_time.epoch }}"
       when: csr_approver_bastion_lb_diagnostics_on_failure | default(true) | bool
 
-    - name: Optional hints for console RouteHealth / ingress 503 (not OAuth API NLB)
+    - name: Optional hints for console RouteHealth / ingress 503 (not OAuth-only API NLB)
       ansible.builtin.debug:
         msg:
-          - "Console uses *.apps → ingress NLB/ALB, not oauth-openshift.apps → API NLB (see AGENTS.md)."
+          - "Console and (on 4.21+) oauth-openshift.apps use *.apps → ingress NLB/ALB; see AGENTS.md."
           - >-
             AWS: describe-target-health for {{ cluster_name }}-ingress-443-tg
             (pass --region for your account if the CLI default is wrong).

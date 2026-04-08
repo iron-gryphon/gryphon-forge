@@ -24,9 +24,10 @@ mirror_registry_dockerconfig_extra_path: ""  # noqa: var-naming[no-role-prefix]
 # Registry API scheme for discover-mirror-release-tag.sh (curl /v2/.../tags/list); use http only for plain-HTTP mirrors.
 mirror_registry_discovery_scheme: "https"  # noqa: var-naming[no-role-prefix]
 
-# API NLB OAuth path (issues #23/#24): kube-apiserver must present a cert valid for oauth-openshift.apps.<cluster>.<domain>.
+# API NLB OAuth path (issues #23/#24): kube-apiserver must present a cert valid for oauth-openshift.apps when DNS points at API :443.
+# OCP 4.21+ defaults false (ingress DNS — issue #30). Override via forge_oauth_apps_via_api_nlb or this variable.
 # When true: generate a forge-local CA + leaf, merge CA into install-config additionalTrustBundle (policy Always), and add
 # APIServer.spec.servingCerts.namedCertificates + Secret in manifests/ (Red Hat–supported user-provided API serving certs).
-ignition_oauth_apps_api_named_certificate: true
+ignition_oauth_apps_api_named_certificate: "{{ forge_oauth_apps_via_api_nlb | default((ocp_version | default('4.14')) is version('4.21', '<')) }}"
 ignition_oauth_apps_api_serving_secret_name: forge-oauth-apps-api-serving
 ignition_oauth_apps_api_cert_validity_days: 3650

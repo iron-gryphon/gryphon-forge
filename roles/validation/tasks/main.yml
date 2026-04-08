@@ -71,7 +71,7 @@
   tags:
     - validation
 
-- name: Check oauth-openshift.apps HTTPS reachability (API NLB OAuth express lane)
+- name: Check oauth-openshift.apps HTTPS reachability
   ansible.builtin.include_tasks: oauth_apps_connectivity.yml
   when: validation_oc_whoami.rc | default(1) == 0
   tags:
@@ -108,7 +108,7 @@
       stderr: {{ validation_cluster_version.stderr }}
       {% endif %}
 
-      --- oauth-openshift.apps HTTPS (API NLB :443 express lane) ---
+      --- oauth-openshift.apps HTTPS ---
       {{ validation_oauth_connectivity_report_section | default('(not checked)') }}
   tags:
     - validation
