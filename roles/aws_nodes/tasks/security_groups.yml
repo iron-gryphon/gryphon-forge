@@ -14,6 +14,8 @@
 # so ssh from the foundry bastion over peering matches API/MCS (not only hardcoded 10.0.0.0/8).
 # Master SSH uses the same Nest / bastion SG / RFC1918 sources as bootstrap so the bastion can reach :22 on control plane nodes.
 # Worker SSH uses the same sources so the bastion can reach :22 on workers (Nest CIDR / bastion SG when applicable).
+# Ingress NLB uses instance targets with preserved client IP; Nest sources must be allowed on worker :80/:443 when
+# foundry_nest_vpc_cidr is set (same pattern as bootstrap API/MCS from Nest). ACM ALB ingress: allow Nest on ALB SG too.
 #
 # Prefer the live VPC IPv4 CIDR from EC2 (authoritative). A stale/wrong foundry_vault_vpc_cidr breaks
 # NLB health checks (all targets unhealthy) while SSH may still work via 10.0.0.0/8 or Nest rules.
@@ -284,15 +286,38 @@
           else []
         )
         + (
-          [
-            {
-              'proto': 'tcp',
-              'from_port': 22,
-              'to_port': 22,
-              'cidr_ip': foundry_nest_vpc_cidr,
-              'rule_desc': 'SSH from Nest (bastion via peering)'
-            },
-          ]
+          (
+            [
+              {
+                'proto': 'tcp',
+                'from_port': 22,
+                'to_port': 22,
+                'cidr_ip': foundry_nest_vpc_cidr,
+                'rule_desc': 'SSH from Nest (bastion via peering)'
+              },
+            ]
+            + (
+              [
+                {
+                  'proto': 'tcp',
+                  'from_port': 80,
+                  'to_port': 80,
+                  'cidr_ip': foundry_nest_vpc_cidr,
+                  'rule_desc': 'Ingress NLB / router from Nest (bastion)'
+                },
+                {
+                  'proto': 'tcp',
+                  'from_port': 443,
+                  'to_port': 443,
+                  'cidr_ip': foundry_nest_vpc_cidr,
+                  'rule_desc': 'Ingress NLB / router from Nest (bastion)'
+                },
+              ]
+              if (aws_nodes_ingress_register_masters_when_no_workers | bool)
+                and (((worker_count | default(0) | int) + (gpu_worker_count | default(0) | int)) == 0)
+              else []
+            )
+          )
           if foundry_nest_vpc_cidr | default('') | length > 0
           else []
         )
@@ -422,6 +447,20 @@
               'cidr_ip': foundry_nest_vpc_cidr,
               'rule_desc': 'SSH from Nest (bastion via peering)'
             },
+            {
+              'proto': 'tcp',
+              'from_port': 80,
+              'to_port': 80,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'Ingress NLB / router from Nest (bastion)'
+            },
+            {
+              'proto': 'tcp',
+              'from_port': 443,
+              'to_port': 443,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'Ingress NLB / router from Nest (bastion)'
+            },
           ]
           if foundry_nest_vpc_cidr | default('') | length > 0
           else []
@@ -441,17 +480,45 @@
     description: "Ingress ALB for {{ cluster_name }}"
     vpc_id: "{{ foundry_vpc_id }}"
     state: present
-    rules:
-      - proto: tcp
-        from_port: 443
-        to_port: 443
-        cidr_ip: "{{ aws_nodes_effective_vault_vpc_cidr }}"
-        rule_desc: "HTTPS from VPC"
-      - proto: tcp
-        from_port: 80
-        to_port: 80
-        cidr_ip: "{{ aws_nodes_effective_vault_vpc_cidr }}"
-        rule_desc: "HTTP from VPC"
+    rules: >-
+      {{
+        [
+          {
+            'proto': 'tcp',
+            'from_port': 443,
+            'to_port': 443,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'HTTPS from VPC'
+          },
+          {
+            'proto': 'tcp',
+            'from_port': 80,
+            'to_port': 80,
+            'cidr_ip': aws_nodes_effective_vault_vpc_cidr,
+            'rule_desc': 'HTTP from VPC'
+          },
+        ]
+        + (
+          [
+            {
+              'proto': 'tcp',
+              'from_port': 443,
+              'to_port': 443,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'HTTPS from Nest (bastion via peering)'
+            },
+            {
+              'proto': 'tcp',
+              'from_port': 80,
+              'to_port': 80,
+              'cidr_ip': foundry_nest_vpc_cidr,
+              'rule_desc': 'HTTP from Nest (bastion via peering)'
+            },
+          ]
+          if foundry_nest_vpc_cidr | default('') | length > 0
+          else []
+        )
+      }}
     tags:
       Name: "{{ cluster_name }}-ingress-alb-sg"
       cluster: "{{ cluster_name }}"
