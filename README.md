@@ -67,6 +67,12 @@ source .venv/bin/activate   # On Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
 ```
 
+**Pre-commit hooks** — Install hooks to run `ansible-lint` automatically on every commit:
+
+```bash
+pre-commit install
+```
+
 Install the required Ansible collections:
 
 ```bash
