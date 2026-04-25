@@ -640,6 +640,18 @@
         - csr_approval
         - validation
 
+    - name: Ensure oc-mirror on bastion matches OCP mirror channel
+      ansible.builtin.include_role:
+        name: ignition
+        tasks_from: ensure_oc_mirror_install.yml
+      vars:
+        ignition_oc_mirror_target_bin_dir: "{{ bastion_install_dir }}/bin"
+        ignition_oc_mirror_download_tmp: "/var/tmp/gryphon-forge-oc-mirror-dl-{{ cluster_name }}"
+      when: forge_oc_mirror_install_enabled | default(true) | bool
+      tags:
+        - csr_approval
+        - validation
+
     - name: Remove temp directory
       ansible.builtin.file:
         path: "{{ forge_bastion_tmp }}"

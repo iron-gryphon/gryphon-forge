@@ -156,7 +156,13 @@ forge_ocp_mirror_validate_certs: true
 # Same URLs used by the ignition role on the controller so install state matches bastion binaries.
 forge_ocp_installer_url_linux: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-install-linux.tar.gz"
 forge_ocp_client_url_linux: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-client-linux.tar.gz"
+# oc-mirror tarball in the same channel directory (e.g. oc-mirror.rhel9.tar.gz). Empty = auto rhel8 vs rhel9 from ansible_facts.
+forge_ocp_oc_mirror_archive: ""
+# When true (default): install oc-mirror next to openshift-install/oc from forge_ocp_mirror_* (Linux bastion + Linux controller).
+forge_oc_mirror_install_enabled: true
 # Controller: leave empty to auto-download openshift-install + oc into install_dir/bin (Linux/macOS).
 # Set both to absolute paths for air-gapped controllers or unsupported OS.
 openshift_install_binary_path: ""
 openshift_client_binary_path: ""
+# Controller only: absolute path to oc-mirror when not using auto-download (e.g. air-gapped). Bastion always uses channel download when enabled.
+openshift_oc_mirror_binary_path: ""

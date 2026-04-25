@@ -51,7 +51,7 @@ This project expects a `foundry_output.json` or access to the Terraform remote s
 ### 1. Prepare your environment
 The Forge requires the following tools:
 
-* **Controller (your machine):** The ignition role downloads `openshift-install` and `oc` into `install_dir/bin/` from the same `forge_ocp_mirror_base_url` / `forge_ocp_mirror_channel` as the bastion (Linux or macOS archives), so install state matches `gather bootstrap` / `wait-for` on the bastion. Override with `openshift_install_binary_path` / `openshift_client_binary_path` if the controller cannot reach the mirror. When using a bastion, CSR approval and validation still use Linux binaries under `bastion_install_dir/bin/` (see *Bastion OCP tools* below).
+* **Controller (your machine):** The ignition role downloads `openshift-install` and `oc` into `install_dir/bin/` from the same `forge_ocp_mirror_base_url` / `forge_ocp_mirror_channel` as the bastion (Linux or macOS archives), so install state matches `gather bootstrap` / `wait-for` on the bastion. On **Linux** controllers only, it also downloads `oc-mirror` into the same `install_dir/bin/` when `forge_oc_mirror_install_enabled` is true (same channel as `ocp_version` / `forge_ocp_mirror_channel`). Override with `openshift_install_binary_path` / `openshift_client_binary_path` if the controller cannot reach the mirror; set `openshift_oc_mirror_binary_path` to pin `oc-mirror` on the controller. When using a bastion, CSR approval and validation still use Linux binaries under `bastion_install_dir/bin/` (see *Bastion OCP tools* below).
 * `ansible` (with `amazon.aws`, `community.aws`, and `kubernetes.core` collections)
 
 **Virtual environment (recommended)** — Create and activate a virtual environment so Ansible uses the correct Python interpreter with all dependencies:
@@ -192,7 +192,7 @@ ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json -e ec2_key
 - **Extra vars:** `-e bastion_ssh_private_key_path=../gryphon-foundry/bastion-key.pem` (path relative to CWD when run from `gryphon-forge/`)
 - **Default:** `~/.ssh/<ec2_key_name>.pem` (only when bastion key matches OCP key)
 
-**Bastion OCP tools** — When using a bastion, the playbook does *not* copy `openshift-install` or `oc` from your controller (avoiding Mac/Linux binary mismatch). Instead, the bastion downloads Linux-compatible binaries directly from `mirror.openshift.com`, matching the `ocp_version` in config (e.g. `latest-4.21`). The bastion must have internet access to the mirror for the first run. Override `forge_ocp_mirror_base_url` for air-gapped or internal mirrors.
+**Bastion OCP tools** — When using a bastion, the playbook does *not* copy `openshift-install` or `oc` from your controller (avoiding Mac/Linux binary mismatch). Instead, the bastion downloads Linux-compatible binaries directly from `mirror.openshift.com`, matching the `ocp_version` in config (e.g. `latest-4.21`). It also installs `oc-mirror` into `bastion_install_dir/bin/` from the same channel (rhel8 vs rhel9 tarball is chosen from the OS, or set `forge_ocp_oc_mirror_archive` explicitly). Put that directory on `PATH` when mirroring (e.g. `export PATH="{{ bastion_install_dir }}/bin:$PATH"`). Disable with `forge_oc_mirror_install_enabled: false` if you manage `oc-mirror` yourself. The bastion must have internet access to the mirror for the first run. Override `forge_ocp_mirror_base_url` for air-gapped or internal mirrors.
 
 **Disconnected / Air-Gapped Install** — The Vault has no internet. OCP nodes must pull images from a mirror registry reachable via VPC peering (e.g. in Nest).
 
@@ -204,8 +204,9 @@ ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json -e ec2_key
 
 2. **Run oc-mirror from bastion** to populate the mirror registry:
    ```bash
-   # SSH to bastion, install oc-mirror, create imageset-config.yaml
-   # Then: oc mirror run --config imageset-config.yaml
+   # SSH to bastion; oc-mirror is under bastion_install_dir/bin when forge_oc_mirror_install_enabled (default).
+   # export PATH="/var/tmp/gryphon-forge-install/<cluster_name>/bin:$PATH"   # or your bastion_install_dir
+   # Create imageset-config.yaml, then e.g.: oc-mirror --v2 ... (see Red Hat docs for your OCP version)
    ```
    See [Red Hat disconnected install docs](https://docs.openshift.com/container-platform/4.15/installing/disconnected_install/installing-mirroring-disconnected.html).
 

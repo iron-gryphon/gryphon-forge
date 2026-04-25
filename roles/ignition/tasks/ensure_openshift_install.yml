@@ -74,6 +74,32 @@
     - aws_nodes
     - ec2
 
+- name: Stat user-pinned oc-mirror binary
+  ansible.builtin.stat:
+    path: "{{ openshift_oc_mirror_binary_path }}"
+  register: ignition_oc_mirror_pin_stat
+  when: openshift_oc_mirror_binary_path | default('') | length > 0
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Require pinned oc-mirror path to exist
+  ansible.builtin.assert:
+    that:
+      - ignition_oc_mirror_pin_stat.stat.exists | default(false)
+      - ignition_oc_mirror_pin_stat.stat.isreg | default(false) or ignition_oc_mirror_pin_stat.stat.islnk | default(false)
+      - ignition_oc_mirror_pin_stat.stat.executable | default(false)
+    fail_msg: >-
+      openshift_oc_mirror_binary_path={{ openshift_oc_mirror_binary_path }} is missing or not executable.
+  when: openshift_oc_mirror_binary_path | default('') | length > 0
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
 - name: Set mirror archive names for controller OS
   ansible.builtin.set_fact:
     ignition_ocp_installer_archive: "{{ _inst_arch }}"
@@ -315,6 +341,21 @@
     fail_msg: >-
       oc missing at {{ openshift_client_cmd }}.
       Check mirror URL (forge_ocp_mirror_base_url / forge_ocp_mirror_channel) and network access.
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Ensure controller oc-mirror matches OCP mirror channel (Linux)
+  ansible.builtin.include_tasks: ensure_oc_mirror_install.yml
+  vars:
+    ignition_oc_mirror_target_bin_dir: "{{ install_dir }}/bin"
+    ignition_oc_mirror_download_tmp: "{{ install_dir }}/.forge-download-cache/oc-mirror-extract"
+  when:
+    - forge_oc_mirror_install_enabled | default(true) | bool
+    - openshift_oc_mirror_binary_path | default('') | length == 0
+    - ansible_facts['system'] == 'Linux'
   tags:
     - ignition
     - config
