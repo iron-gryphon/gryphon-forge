@@ -442,7 +442,8 @@
         - dns_gate
 
 # Runs only when bastion was added via add_host (foundry provides bastion_public_ip/bastion_public_dns)
-# Bastion downloads openshift-install and oc from Red Hat mirror (Linux binaries, version-compatible)
+# Install *artifacts* rsync from controller (exclude bin/ + .forge-download-cache/). Bastion downloads
+# Linux openshift-install + oc from the mirror below — never push controller binaries to the bastion.
 # TMPDIR avoids /tmp (459MB tmpfs) - Ansible modules use /var/tmp for temp files
 - name: Sync install directory to bastion for API access
   hosts: bastion
@@ -453,6 +454,7 @@
     # Foundry overrides apply to localhost in the first play; bastion must use the same identity for paths and DNS.
     cluster_name: "{{ hostvars['localhost']['cluster_name'] }}"
     base_domain: "{{ hostvars['localhost']['base_domain'] }}"
+    forge_controller_install_dir: "{{ hostvars['localhost']['install_dir'] }}"
     # Use /var/tmp to avoid /tmp space limits (openshift-install tarball ~395MB)
     forge_bastion_tmp: "/var/tmp/gryphon-forge-ocp-tools"
   tasks:
@@ -474,35 +476,16 @@
         - csr_approval
         - validation
 
-    - name: Copy install directory from controller to bastion
-      ansible.builtin.copy:
-        src: "{{ install_dir }}/"
+    - name: Rsync install artifacts to bastion (exclude controller bin and download cache)
+      ansible.posix.synchronize:
+        src: "{{ forge_controller_install_dir | expanduser }}/"
         dest: "{{ bastion_install_dir }}/"
-        mode: "0644"
-      tags:
-        - csr_approval
-        - validation
-
-    # Copy brings controller bin/oc + openshift-install (often macOS from a Darwin laptop). Remove anything
-    # that is not Linux ELF so the next task re-fetches Linux bits from the mirror.
-    - name: Remove non-ELF openshift-install and oc after controller copy (Darwin controller → Linux bastion)
-      ansible.builtin.shell: |
-        set -euo pipefail
-        removed=0
-        elf_hdr() {
-          [ -f "$1" ] || return 1
-          h=$(head -c 4 "$1" | od -An -t x1 | tr -d '[:space:]')
-          case "$h" in 7f454c46*) return 0;; *) return 1;; esac
-        }
-        for f in "{{ bastion_install_dir }}/bin/openshift-install" "{{ bastion_install_dir }}/bin/oc"; do
-          if [ -f "$f" ] && ! elf_hdr "$f"; then
-            rm -f "$f"
-            removed=1
-          fi
-        done
-        printf '%s' "$removed"
-      register: forge_bastion_strip_non_elf_bins
-      changed_when: forge_bastion_strip_non_elf_bins.stdout | trim == '1'
+        archive: true
+        delete: false
+        rsync_opts:
+          - "--exclude=bin/"
+          - "--exclude=.forge-download-cache/"
+      delegate_to: localhost
       tags:
         - csr_approval
         - validation
@@ -557,8 +540,7 @@
         - csr_approval
         - validation
 
-    # Sync copies controller bin/openshift-install + oc (often macOS); bastion must run Linux ELF
-    # binaries. Require both files and ELF magic — do not rely on path existence alone.
+    # Rsync excludes bin/; populate Linux openshift-install + oc from mirror below.
     - name: Decide if bastion needs Linux openshift-install and oc from mirror
       ansible.builtin.shell: |
         set -euo pipefail

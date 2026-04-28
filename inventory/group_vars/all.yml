@@ -66,8 +66,9 @@ ssh_public_key_path: "{{ lookup('env', 'SSH_PUBLIC_KEY_PATH') | default('~/.ssh/
 ocp_ssh_private_key_path: "{{ lookup('env', 'OCP_SSH_PRIVATE_KEY_PATH') | default(ssh_public_key_path | regex_replace('\\.pub$', ''), true) }}"
 
 # --- Bastion (for API access; populated from foundry, no hardcoding) ---
-# When foundry provides bastion_public_ip/bastion_public_dns, install_dir is synced
-# to bastion and CSR approval/validation run there (reach cluster API in private VPC).
+# When foundry provides bastion_public_ip/bastion_public_dns, install artifacts (auth, ignition,
+# manifests, etc.) are rsync'd to bastion; openshift-install and oc are downloaded on the bastion
+# from the mirror (Linux). CSR approval/validation run there (reach cluster API in private VPC).
 # Use /var/tmp (not /tmp) - bastion /tmp is often tmpfs (~459MB) with insufficient space
 # for install dir + OCP tools (~800MB). Override via -e bastion_install_dir=... if needed.
 bastion_install_dir: "/var/tmp/gryphon-forge-install/{{ cluster_name }}"
