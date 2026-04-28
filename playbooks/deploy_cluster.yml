@@ -483,6 +483,30 @@
         - csr_approval
         - validation
 
+    # Copy brings controller bin/oc + openshift-install (often macOS from a Darwin laptop). Remove anything
+    # that is not Linux ELF so the next task re-fetches Linux bits from the mirror.
+    - name: Remove non-ELF openshift-install and oc after controller copy (Darwin controller → Linux bastion)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        removed=0
+        elf_hdr() {
+          [ -f "$1" ] || return 1
+          h=$(head -c 4 "$1" | od -An -t x1 | tr -d '[:space:]')
+          case "$h" in 7f454c46*) return 0;; *) return 1;; esac
+        }
+        for f in "{{ bastion_install_dir }}/bin/openshift-install" "{{ bastion_install_dir }}/bin/oc"; do
+          if [ -f "$f" ] && ! elf_hdr "$f"; then
+            rm -f "$f"
+            removed=1
+          fi
+        done
+        printf '%s' "$removed"
+      register: forge_bastion_strip_non_elf_bins
+      changed_when: forge_bastion_strip_non_elf_bins.stdout | trim == '1'
+      tags:
+        - csr_approval
+        - validation
+
     # Bastion SSH uses bastion_ssh_private_key_path (ec2-user). Bootstrap/RHCOS core uses the key
     # embedded in install-config (ssh_public_key_path); copy its private half for gather / manual SSH.
     - name: Stat OCP SSH private key on Ansible controller
