@@ -458,11 +458,16 @@
     # Use /var/tmp to avoid /tmp space limits (openshift-install tarball ~395MB)
     forge_bastion_tmp: "/var/tmp/gryphon-forge-ocp-tools"
   tasks:
+    # ansible.cfg often sets become=true globally; directories created as root break synchronize because
+    # rsync over SSH runs as ansible_user (ec2-user), not root.
     - name: Ensure bastion install directory exists
       ansible.builtin.file:
         path: "{{ bastion_install_dir }}"
         state: directory
         mode: "0755"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      become: false
       tags:
         - csr_approval
         - validation
@@ -472,6 +477,22 @@
         path: "{{ bastion_install_dir }}/bin"
         state: directory
         mode: "0755"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      become: false
+      tags:
+        - csr_approval
+        - validation
+
+    # Repair root:root trees from older runs (copy/become) so ec2-user can rsync into this path.
+    - name: Align ownership on bastion install dir for synchronize SSH user
+      ansible.builtin.file:
+        path: "{{ bastion_install_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        recurse: true
+      become: true
       tags:
         - csr_approval
         - validation
@@ -496,6 +517,7 @@
         dest: "{{ bastion_install_dir }}/"
         archive: true
         delete: false
+        times: false
         # delegate_to: localhost uses a local connection; rsync's ssh must get the bastion key explicitly.
         # Relative paths must be absolute: rsync's subprocess cwd is not the project directory (ssh -i would fail).
         private_key: >-
