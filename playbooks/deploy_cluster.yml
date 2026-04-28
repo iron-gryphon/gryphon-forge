@@ -477,11 +477,24 @@
         - validation
 
     - name: Rsync install artifacts to bastion (exclude controller bin and download cache)
+      vars:
+        # Raw path from inventory / -e (may be relative to where ansible-playbook was started).
+        _forge_bastion_pk: "{{ hostvars[inventory_hostname]['ansible_ssh_private_key_file'] | default(bastion_ssh_private_key_path, true) }}"
       ansible.posix.synchronize:
         src: "{{ forge_controller_install_dir | expanduser }}/"
         dest: "{{ bastion_install_dir }}/"
         archive: true
         delete: false
+        # delegate_to: localhost uses a local connection; rsync's ssh must get the bastion key explicitly.
+        # Relative paths must be absolute: rsync's subprocess cwd is not the project directory (ssh -i would fail).
+        private_key: >-
+          {{
+            (
+              ((playbook_dir | dirname) ~ '/' ~ (_forge_bastion_pk | expanduser))
+              if (_forge_bastion_pk | expanduser | regex_search('^/')) is none
+              else (_forge_bastion_pk | expanduser)
+            ) | normpath
+          }}
         rsync_opts:
           - "--exclude=bin/"
           - "--exclude=.forge-download-cache/"
