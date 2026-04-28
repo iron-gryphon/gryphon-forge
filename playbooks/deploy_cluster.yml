@@ -476,6 +476,17 @@
         - csr_approval
         - validation
 
+    # ansible.posix.synchronize runs rsync on the controller and invokes rsync --server on the bastion over SSH.
+    # Minimal AMIs often omit rsync; install before sync.
+    - name: Ensure rsync is installed on bastion (remote rsync helper for synchronize)
+      ansible.builtin.package:
+        name: rsync
+        state: present
+      become: true
+      tags:
+        - csr_approval
+        - validation
+
     - name: Rsync install artifacts to bastion (exclude controller bin and download cache)
       vars:
         # Raw path from inventory / -e (may be relative to where ansible-playbook was started).
