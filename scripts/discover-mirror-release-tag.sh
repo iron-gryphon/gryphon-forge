@@ -231,8 +231,10 @@ discover_via_curl() {
   local auth out url last_err try
   local -a try_paths=("${REPO}")
   if [[ "${REPO}" == "openshift/release" ]]; then
-    # Prefer ocp-release repos; openshift/release/openshift/release often holds only per-component tags (4.21.z-arch-name).
+    # oc-mirror v2 uses openshift/release/openshift/release-images; v1 / oc adm uses openshift-release-dev/ocp-release.
+    # openshift/release/openshift/release holds only per-component tags (4.21.z-arch-name).
     try_paths+=(
+      "openshift/release/openshift/release-images"
       "openshift/release/openshift-release-dev/ocp-release"
       "openshift-release-dev/ocp-release"
       "openshift/release/openshift/release"
