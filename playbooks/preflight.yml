@@ -127,6 +127,21 @@
         hosted_zone_id: "{{ preflight_zone_id }}"
         region: "{{ preflight_region }}"
       register: preflight_route53_zone
+      # amazon.aws rejects profile + explicit credentials in the same call. A shell may have both
+      # AWS_PROFILE (e.g. default) and AWS_* key/session env vars; clear profile for this task only.
+      environment: "{{ _preflight_r53_env }}"
+      vars:
+        _preflight_r53_env: >-
+          {{
+            {'AWS_PROFILE': ''}
+            if (
+              (lookup('env', 'AWS_ACCESS_KEY_ID', default='') | length > 0)
+              or (lookup('env', 'AWS_ACCESS_KEY', default='') | length > 0)
+              or (lookup('env', 'AWS_SECRET_ACCESS_KEY', default='') | length > 0)
+              or (lookup('env', 'AWS_SESSION_TOKEN', default='') | length > 0)
+            )
+            else {}
+          }}
 
     - name: Derive VPC IDs associated with internal hosted zone
       ansible.builtin.set_fact:
