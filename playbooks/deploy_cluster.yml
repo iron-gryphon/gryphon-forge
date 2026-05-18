@@ -497,8 +497,8 @@
         - csr_approval
         - validation
 
-    # ansible.posix.synchronize runs rsync on the controller and invokes rsync --server on the bastion over SSH.
-    # Minimal AMIs often omit rsync; install before sync.
+    # ansible.posix.synchronize runs rsync on the Ansible controller and rsync --server on the bastion over SSH.
+    # Minimal AMIs often omit rsync; install on bastion before sync. Controllers usually ship rsync (verify below).
     - name: Ensure rsync is installed on bastion (remote rsync helper for synchronize)
       ansible.builtin.package:
         name: rsync
@@ -508,10 +508,36 @@
         - csr_approval
         - validation
 
+    - name: Verify rsync is available on Ansible controller (synchronize invokes local rsync)
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: forge_controller_rsync_stat
+      delegate_to: localhost
+      connection: local
+      run_once: true
+      loop:
+        - /usr/bin/rsync
+        - /bin/rsync
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Require rsync on Ansible controller for synchronize
+      ansible.builtin.assert:
+        that:
+          - forge_controller_rsync_stat.results | selectattr('stat.exists', 'equalto', true) | list | length > 0
+        fail_msg: >-
+          rsync is required on the Ansible controller for ansible.posix.synchronize (install rsync on this machine).
+          Examples: dnf install rsync / apt install rsync; macOS includes /usr/bin/rsync by default.
+      tags:
+        - csr_approval
+        - validation
+
     - name: Rsync install artifacts to bastion (exclude controller bin and download cache)
       vars:
         # Raw path from inventory / -e (may be relative to where ansible-playbook was started).
         _forge_bastion_pk: "{{ hostvars[inventory_hostname]['ansible_ssh_private_key_file'] | default(bastion_ssh_private_key_path, true) }}"
+        _forge_bastion_pk_expanded: "{{ _forge_bastion_pk | expanduser }}"
       ansible.posix.synchronize:
         src: "{{ forge_controller_install_dir | expanduser }}/"
         dest: "{{ bastion_install_dir }}/"
@@ -522,11 +548,9 @@
         # Relative paths must be absolute: rsync's subprocess cwd is not the project directory (ssh -i would fail).
         private_key: >-
           {{
-            (
-              ((playbook_dir | dirname) ~ '/' ~ (_forge_bastion_pk | expanduser))
-              if (_forge_bastion_pk | expanduser | regex_search('^/')) is none
-              else (_forge_bastion_pk | expanduser)
-            ) | normpath
+            (_forge_bastion_pk_expanded | normpath)
+            if (_forge_bastion_pk_expanded | regex_search('^/'))
+            else ([playbook_dir | dirname, _forge_bastion_pk_expanded] | path_join | normpath)
           }}
         rsync_opts:
           - "--exclude=bin/"

@@ -2,11 +2,11 @@
 # Install oc-mirror under ignition_oc_mirror_target_bin_dir from forge_ocp_mirror_* (same channel as openshift-install / oc).
 # Required vars: ignition_oc_mirror_target_bin_dir, ignition_oc_mirror_download_tmp
 # Optional: forge_oc_mirror_install_enabled, forge_ocp_oc_mirror_archive (empty = pick rhel8/rhel9 tarball by OS)
+#
+# When forge_ocp_oc_mirror_archive is unset: Amazon Linux 2 -> rhel8; Amazon 2023 / EL9+ / default -> rhel9.
+# Other Linux (e.g. Debian/Ubuntu controller) does not error; it defaults to rhel9. Override the archive name if needed.
 
-- name: Resolve oc-mirror archive filename (inventory override)
-  ansible.builtin.set_fact:
-    ignition_oc_mirror_archive_effective: "{{ forge_ocp_oc_mirror_archive | default('') | trim }}"
-  when: forge_ocp_oc_mirror_archive | default('') | trim | length > 0
+- name: Ensure oc-mirror binary matches the OCP mirror channel
   tags:
     - ignition
     - config
@@ -14,200 +14,115 @@
     - ec2
     - csr_approval
     - validation
+  block:
+    - name: Resolve oc-mirror archive filename (inventory override)
+      ansible.builtin.set_fact:
+        ignition_oc_mirror_archive_effective: "{{ forge_ocp_oc_mirror_archive | default('') | trim }}"
+      when: forge_ocp_oc_mirror_archive | default('') | trim | length > 0
 
-- name: Resolve oc-mirror archive filename (auto rhel8 vs rhel9)
-  ansible.builtin.set_fact:
-    ignition_oc_mirror_archive_effective: "{{ _archive }}"
-  when: forge_ocp_oc_mirror_archive | default('') | trim | length == 0
-  vars:
-    _amzn_rhel9: "{{ (ansible_facts['distribution'] == 'Amazon' and ansible_facts['distribution_major_version'] == '2023') | bool }}"
-    _amzn_rhel8: "{{ (ansible_facts['distribution'] == 'Amazon' and ansible_facts['distribution_major_version'] == '2') | bool }}"
-    _el_ge_9: >-
-      {{ (ansible_facts['os_family'] == 'RedHat'
-         and ansible_facts['distribution'] not in ['Fedora', 'Amazon']
-         and (ansible_facts['distribution_major_version'] | int | default(0)) >= 9) | bool }}
-    _archive: >-
-      {{ 'oc-mirror.rhel9.tar.gz' if (_amzn_rhel9 | bool or _el_ge_9 | bool)
-         else ('oc-mirror.rhel8.tar.gz' if (_amzn_rhel8 | bool) else 'oc-mirror.rhel9.tar.gz') }}
-  tags:
-    - ignition
-    - config
-    - aws_nodes
-    - ec2
-    - csr_approval
-    - validation
+    - name: Resolve oc-mirror archive filename (auto rhel8 vs rhel9)
+      ansible.builtin.set_fact:
+        ignition_oc_mirror_archive_effective: "{{ _archive }}"
+      when: forge_ocp_oc_mirror_archive | default('') | trim | length == 0
+      vars:
+        _dist: "{{ ansible_facts['distribution'] | default('', true) }}"
+        _dist_maj: "{{ ansible_facts['distribution_major_version'] | default('0', true) }}"
+        _os_fam: "{{ ansible_facts['os_family'] | default('', true) }}"
+        _archive: >-
+          {{ 'oc-mirror.rhel9.tar.gz'
+             if ((_dist == 'Amazon' and _dist_maj == '2023')
+                 or (_os_fam == 'RedHat' and _dist not in ['Fedora', 'Amazon'] and (_dist_maj | int) >= 9))
+             else ('oc-mirror.rhel8.tar.gz'
+                   if (_dist == 'Amazon' and _dist_maj == '2')
+                   else 'oc-mirror.rhel9.tar.gz') }}
 
-- name: Stat oc-mirror binary
-  ansible.builtin.stat:
-    path: "{{ ignition_oc_mirror_target_bin_dir }}/oc-mirror"
-  register: ignition_oc_mirror_binary_stat
-  tags:
-    - ignition
-    - config
-    - aws_nodes
-    - ec2
-    - csr_approval
-    - validation
+    - name: Stat oc-mirror binary
+      ansible.builtin.stat:
+        path: "{{ ignition_oc_mirror_target_bin_dir }}/oc-mirror"
+      register: ignition_oc_mirror_binary_stat
 
-- name: Stat oc-mirror channel marker
-  ansible.builtin.stat:
-    path: "{{ ignition_oc_mirror_target_bin_dir }}/.forge-oc-mirror-channel"
-  register: ignition_oc_mirror_marker_stat
-  tags:
-    - ignition
-    - config
-    - aws_nodes
-    - ec2
-    - csr_approval
-    - validation
+    - name: Stat oc-mirror channel marker
+      ansible.builtin.stat:
+        path: "{{ ignition_oc_mirror_target_bin_dir }}/.forge-oc-mirror-channel"
+      register: ignition_oc_mirror_marker_stat
 
-- name: Read oc-mirror channel marker
-  ansible.builtin.slurp:
-    path: "{{ ignition_oc_mirror_target_bin_dir }}/.forge-oc-mirror-channel"
-  register: ignition_oc_mirror_marker_slurp
-  when: ignition_oc_mirror_marker_stat.stat.exists | default(false)
-  tags:
-    - ignition
-    - config
-    - aws_nodes
-    - ec2
-    - csr_approval
-    - validation
+    - name: Read oc-mirror channel marker
+      ansible.builtin.slurp:
+        path: "{{ ignition_oc_mirror_target_bin_dir }}/.forge-oc-mirror-channel"
+      register: ignition_oc_mirror_marker_slurp
+      when: ignition_oc_mirror_marker_stat.stat.exists | default(false)
 
-- name: Decide whether to (re)download oc-mirror
-  ansible.builtin.set_fact:
-    ignition_oc_mirror_need_download: >-
-      {{ (not ignition_oc_mirror_binary_stat.stat.exists | default(false))
-         or (not ignition_oc_mirror_marker_stat.stat.exists | default(false))
-         or (_marker_channel_mismatch | default(false)) }}
-  vars:
-    _marker_channel_mismatch: >-
-      {{ (ignition_oc_mirror_marker_stat.stat.exists | default(false))
-         and not (ignition_oc_mirror_marker_slurp.skipped | default(false))
-         and ((ignition_oc_mirror_marker_slurp.content | b64decode | trim) != (forge_ocp_mirror_channel | trim)) }}
-  tags:
-    - ignition
-    - config
-    - aws_nodes
-    - ec2
-    - csr_approval
-    - validation
+    - name: Decide whether to (re)download oc-mirror
+      ansible.builtin.set_fact:
+        ignition_oc_mirror_need_download: >-
+          {{ (not ignition_oc_mirror_binary_stat.stat.exists | default(false))
+             or (not ignition_oc_mirror_marker_stat.stat.exists | default(false))
+             or (_marker_channel_mismatch | default(false)) }}
+      vars:
+        _marker_channel_mismatch: >-
+          {{ (ignition_oc_mirror_marker_stat.stat.exists | default(false))
+             and not (ignition_oc_mirror_marker_slurp.skipped | default(false))
+             and ((ignition_oc_mirror_marker_slurp.content | b64decode | trim) != (forge_ocp_mirror_channel | trim)) }}
 
-- name: Ensure oc-mirror download temp directory exists
-  ansible.builtin.file:
-    path: "{{ ignition_oc_mirror_download_tmp }}"
-    state: directory
-    mode: "0700"
-  when: forge_oc_mirror_install_enabled | default(true) | bool and ignition_oc_mirror_need_download | bool
-  tags:
-    - ignition
-    - config
-    - aws_nodes
-    - ec2
-    - csr_approval
-    - validation
+    - name: Ensure oc-mirror download temp directory exists
+      ansible.builtin.file:
+        path: "{{ ignition_oc_mirror_download_tmp }}"
+        state: directory
+        mode: "0700"
+      when: forge_oc_mirror_install_enabled | default(true) | bool and ignition_oc_mirror_need_download | bool
 
-- name: Download oc-mirror archive from OCP mirror
-  ansible.builtin.get_url:
-    url: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/{{ ignition_oc_mirror_archive_effective }}"
-    dest: "{{ ignition_oc_mirror_download_tmp }}/{{ ignition_oc_mirror_archive_effective }}"
-    mode: "0644"
-    validate_certs: "{{ forge_ocp_mirror_validate_certs | default(true) | bool }}"
-  when: forge_oc_mirror_install_enabled | default(true) | bool and ignition_oc_mirror_need_download | bool
-  tags:
-    - ignition
-    - config
-    - aws_nodes
-    - ec2
-    - csr_approval
-    - validation
+    - name: Download oc-mirror archive from OCP mirror
+      ansible.builtin.get_url:
+        url: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/{{ ignition_oc_mirror_archive_effective }}"
+        dest: "{{ ignition_oc_mirror_download_tmp }}/{{ ignition_oc_mirror_archive_effective }}"
+        mode: "0644"
+        validate_certs: "{{ forge_ocp_mirror_validate_certs | default(true) | bool }}"
+      when: forge_oc_mirror_install_enabled | default(true) | bool and ignition_oc_mirror_need_download | bool
 
-- name: Extract oc-mirror archive
-  ansible.builtin.unarchive:
-    src: "{{ ignition_oc_mirror_download_tmp }}/{{ ignition_oc_mirror_archive_effective }}"
-    dest: "{{ ignition_oc_mirror_download_tmp }}"
-    remote_src: true
-  when: forge_oc_mirror_install_enabled | default(true) | bool and ignition_oc_mirror_need_download | bool
-  tags:
-    - ignition
-    - config
-    - aws_nodes
-    - ec2
-    - csr_approval
-    - validation
+    - name: Extract oc-mirror archive
+      ansible.builtin.unarchive:
+        src: "{{ ignition_oc_mirror_download_tmp }}/{{ ignition_oc_mirror_archive_effective }}"
+        dest: "{{ ignition_oc_mirror_download_tmp }}"
+        remote_src: true
+      when: forge_oc_mirror_install_enabled | default(true) | bool and ignition_oc_mirror_need_download | bool
 
-- name: Install oc-mirror binary
-  ansible.builtin.shell: |
-    set -euo pipefail
-    BIN=$(find "{{ ignition_oc_mirror_download_tmp }}" -name 'oc-mirror' -type f 2>/dev/null | head -1)
-    if [ -z "$BIN" ]; then
-      echo "oc-mirror binary not found in archive {{ ignition_oc_mirror_archive_effective }}"
-      exit 1
-    fi
-    cp "$BIN" "{{ ignition_oc_mirror_target_bin_dir }}/oc-mirror"
-    chmod 0755 "{{ ignition_oc_mirror_target_bin_dir }}/oc-mirror"
-  when: forge_oc_mirror_install_enabled | default(true) | bool and ignition_oc_mirror_need_download | bool
-  tags:
-    - ignition
-    - config
-    - aws_nodes
-    - ec2
-    - csr_approval
-    - validation
+    - name: Install oc-mirror binary
+      ansible.builtin.shell: |
+        set -euo pipefail
+        BIN=$(find "{{ ignition_oc_mirror_download_tmp }}" -name 'oc-mirror' -type f 2>/dev/null | head -1)
+        if [ -z "$BIN" ]; then
+          echo "oc-mirror binary not found in archive {{ ignition_oc_mirror_archive_effective }}"
+          exit 1
+        fi
+        cp "$BIN" "{{ ignition_oc_mirror_target_bin_dir }}/oc-mirror"
+        chmod 0755 "{{ ignition_oc_mirror_target_bin_dir }}/oc-mirror"
+      when: forge_oc_mirror_install_enabled | default(true) | bool and ignition_oc_mirror_need_download | bool
 
-- name: Record oc-mirror mirror channel for idempotent refresh
-  ansible.builtin.copy:
-    dest: "{{ ignition_oc_mirror_target_bin_dir }}/.forge-oc-mirror-channel"
-    content: "{{ forge_ocp_mirror_channel }}\n"
-    mode: "0644"
-  when: forge_oc_mirror_install_enabled | default(true) | bool and ignition_oc_mirror_need_download | bool
-  tags:
-    - ignition
-    - config
-    - aws_nodes
-    - ec2
-    - csr_approval
-    - validation
+    - name: Record oc-mirror mirror channel for idempotent refresh
+      ansible.builtin.copy:
+        dest: "{{ ignition_oc_mirror_target_bin_dir }}/.forge-oc-mirror-channel"
+        content: "{{ forge_ocp_mirror_channel }}\n"
+        mode: "0644"
+      when: forge_oc_mirror_install_enabled | default(true) | bool and ignition_oc_mirror_need_download | bool
 
-- name: Remove oc-mirror download temp directory
-  ansible.builtin.file:
-    path: "{{ ignition_oc_mirror_download_tmp }}"
-    state: absent
-  when: forge_oc_mirror_install_enabled | default(true) | bool and ignition_oc_mirror_need_download | bool
-  tags:
-    - ignition
-    - config
-    - aws_nodes
-    - ec2
-    - csr_approval
-    - validation
+    - name: Remove oc-mirror download temp directory
+      ansible.builtin.file:
+        path: "{{ ignition_oc_mirror_download_tmp }}"
+        state: absent
+      when: forge_oc_mirror_install_enabled | default(true) | bool and ignition_oc_mirror_need_download | bool
 
-- name: Stat oc-mirror after ensure
-  ansible.builtin.stat:
-    path: "{{ ignition_oc_mirror_target_bin_dir }}/oc-mirror"
-  register: ignition_oc_mirror_final_stat
-  when: forge_oc_mirror_install_enabled | default(true) | bool
-  tags:
-    - ignition
-    - config
-    - aws_nodes
-    - ec2
-    - csr_approval
-    - validation
+    - name: Stat oc-mirror after ensure
+      ansible.builtin.stat:
+        path: "{{ ignition_oc_mirror_target_bin_dir }}/oc-mirror"
+      register: ignition_oc_mirror_final_stat
+      when: forge_oc_mirror_install_enabled | default(true) | bool
 
-- name: Require oc-mirror after ensure
-  ansible.builtin.assert:
-    that:
-      - ignition_oc_mirror_final_stat.stat.exists | default(false)
-      - ignition_oc_mirror_final_stat.stat.executable | default(false)
-    fail_msg: >-
-      oc-mirror missing at {{ ignition_oc_mirror_target_bin_dir }}/oc-mirror after download.
-      Check forge_ocp_mirror_base_url / forge_ocp_mirror_channel / forge_ocp_oc_mirror_archive and network access.
-  when: forge_oc_mirror_install_enabled | default(true) | bool
-  tags:
-    - ignition
-    - config
-    - aws_nodes
-    - ec2
-    - csr_approval
-    - validation
+    - name: Require oc-mirror after ensure
+      ansible.builtin.assert:
+        that:
+          - ignition_oc_mirror_final_stat.stat.exists | default(false)
+          - ignition_oc_mirror_final_stat.stat.executable | default(false)
+        fail_msg: >-
+          oc-mirror missing at {{ ignition_oc_mirror_target_bin_dir }}/oc-mirror after download.
+          Check forge_ocp_mirror_base_url / forge_ocp_mirror_channel / forge_ocp_oc_mirror_archive and network access.
+      when: forge_oc_mirror_install_enabled | default(true) | bool
