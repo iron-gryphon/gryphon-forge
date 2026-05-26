@@ -1,6 +1,6 @@
 # CI validation dependencies (ansible-lint, ansible)
 # Used by .github/workflows/ansible-validation.yml
-ansible>=8.0.0
+ansible>=13.7.0
 ansible-lint>=25.12.2
 
 # Required by amazon.aws collection for EC2, ELB, Route53, etc.
