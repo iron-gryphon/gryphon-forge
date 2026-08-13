@@ -442,7 +442,8 @@
         - dns_gate
 
 # Runs only when bastion was added via add_host (foundry provides bastion_public_ip/bastion_public_dns)
-# Bastion downloads openshift-install and oc from Red Hat mirror (Linux binaries, version-compatible)
+# Install *artifacts* rsync from controller (exclude bin/ + .forge-download-cache/). Bastion downloads
+# Linux openshift-install + oc from the mirror below — never push controller binaries to the bastion.
 # TMPDIR avoids /tmp (459MB tmpfs) - Ansible modules use /var/tmp for temp files
 - name: Sync install directory to bastion for API access
   hosts: bastion
@@ -453,14 +454,20 @@
     # Foundry overrides apply to localhost in the first play; bastion must use the same identity for paths and DNS.
     cluster_name: "{{ hostvars['localhost']['cluster_name'] }}"
     base_domain: "{{ hostvars['localhost']['base_domain'] }}"
+    forge_controller_install_dir: "{{ hostvars['localhost']['install_dir'] }}"
     # Use /var/tmp to avoid /tmp space limits (openshift-install tarball ~395MB)
     forge_bastion_tmp: "/var/tmp/gryphon-forge-ocp-tools"
   tasks:
+    # Rsync over SSH runs as ansible_user; install_dir must be writable by that user. Use become so root
+    # can create or chown paths that still belong to root from older playbook runs (ec2-user alone cannot).
     - name: Ensure bastion install directory exists
       ansible.builtin.file:
         path: "{{ bastion_install_dir }}"
         state: directory
         mode: "0755"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      become: true
       tags:
         - csr_approval
         - validation
@@ -470,15 +477,91 @@
         path: "{{ bastion_install_dir }}/bin"
         state: directory
         mode: "0755"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      become: true
       tags:
         - csr_approval
         - validation
 
-    - name: Copy install directory from controller to bastion
-      ansible.builtin.copy:
-        src: "{{ install_dir }}/"
+    # Descendants may still be root-owned from partial runs; recurse fixes the full tree for rsync.
+    - name: Align ownership on bastion install dir for synchronize SSH user
+      ansible.builtin.file:
+        path: "{{ bastion_install_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        recurse: true
+      become: true
+      tags:
+        - csr_approval
+        - validation
+
+    # ansible.posix.synchronize runs rsync on the Ansible controller and rsync --server on the bastion over SSH.
+    # Minimal AMIs often omit rsync; install on bastion before sync. Controllers usually ship rsync (verify below).
+    - name: Ensure rsync is installed on bastion (remote rsync helper for synchronize)
+      ansible.builtin.package:
+        name: rsync
+        state: present
+      become: true
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Resolve rsync on Ansible controller PATH (synchronize invokes local rsync)
+      ansible.builtin.command:
+        argv:
+          - bash
+          - -c
+          - command -v rsync
+      register: forge_controller_rsync_which
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      connection: local
+      run_once: true
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Require rsync on Ansible controller for synchronize
+      ansible.builtin.assert:
+        that:
+          - forge_controller_rsync_which.rc | default(1) | int == 0
+          - forge_controller_rsync_which.stdout | default('') | trim | length > 0
+        fail_msg: >-
+          rsync is required on the Ansible controller for ansible.posix.synchronize (install rsync on this machine).
+          Examples: dnf install rsync / apt install rsync / brew install rsync; macOS often ships /usr/bin/rsync.
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Rsync install artifacts to bastion (exclude controller bin and download cache)
+      vars:
+        # Raw path from inventory / -e (may be relative to where ansible-playbook was started).
+        _forge_bastion_pk: "{{ hostvars[inventory_hostname]['ansible_ssh_private_key_file'] | default(bastion_ssh_private_key_path, true) }}"
+        _forge_bastion_pk_expanded: "{{ _forge_bastion_pk | expanduser }}"
+      ansible.posix.synchronize:
+        src: "{{ forge_controller_install_dir | expanduser }}/"
         dest: "{{ bastion_install_dir }}/"
-        mode: "0644"
+        archive: true
+        delete: false
+        # Keep mtimes so rsync quick-check stays idempotent. With ansible.cfg become=True the remote
+        # rsync --server runs as root; owner/group false prevents chown to the controller's uid/gid.
+        owner: false
+        group: false
+        # delegate_to: localhost uses a local connection; rsync's ssh must get the bastion key explicitly.
+        # Relative paths must be absolute: rsync's subprocess cwd is not the project directory (ssh -i would fail).
+        private_key: >-
+          {{
+            (_forge_bastion_pk_expanded | normpath)
+            if (_forge_bastion_pk_expanded | regex_search('^/'))
+            else ([playbook_dir | dirname, _forge_bastion_pk_expanded] | path_join | normpath)
+          }}
+        rsync_opts:
+          - "--exclude=bin/"
+          - "--exclude=.forge-download-cache/"
+      delegate_to: localhost
       tags:
         - csr_approval
         - validation
@@ -533,8 +616,8 @@
         - csr_approval
         - validation
 
-    # Sync copies controller bin/openshift-install + oc (often macOS); bastion must run Linux ELF
-    # binaries. Require both files and ELF magic — do not rely on path existence alone.
+    # Rsync excludes bin/, but ELF checks remain: leftover non-Linux binaries from older runs (before
+    # --exclude=bin/) or a partial download must still trigger a re-fetch from the mirror.
     - name: Decide if bastion needs Linux openshift-install and oc from mirror
       ansible.builtin.shell: |
         set -euo pipefail
@@ -636,6 +719,18 @@
         cp "$BIN" {{ bastion_install_dir }}/bin/oc
         chmod 0755 {{ bastion_install_dir }}/bin/oc
       when: (forge_bastion_ocp_tools_plan.stdout | trim) == 'need'
+      tags:
+        - csr_approval
+        - validation
+
+    - name: Ensure oc-mirror on bastion matches OCP mirror channel
+      ansible.builtin.include_role:
+        name: ignition
+        tasks_from: ensure_oc_mirror_install.yml
+      vars:
+        ignition_oc_mirror_target_bin_dir: "{{ bastion_install_dir }}/bin"
+        ignition_oc_mirror_download_tmp: "/var/tmp/gryphon-forge-oc-mirror-dl-{{ cluster_name }}"
+      when: forge_oc_mirror_install_enabled | default(false) | bool
       tags:
         - csr_approval
         - validation

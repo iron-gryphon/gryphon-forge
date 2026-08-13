@@ -1,5 +1,6 @@
 ---
 # Dependabot configuration
+# PRs and manifest resolution use branch `dev` only (not the repo default branch).
 # Note: Ansible Galaxy (requirements.yml) is not supported by Dependabot.
 # For collection updates, consider Renovate (https://docs.renovatebot.com/modules/manager/ansible-galaxy/).
 
@@ -7,10 +8,12 @@ version: 2
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
 
   - package-ecosystem: "pip"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"

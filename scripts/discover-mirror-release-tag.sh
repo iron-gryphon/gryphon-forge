@@ -15,7 +15,8 @@
 #
 # Note: The ocp-release payload uses tags like 4.21.z-x86_64 (not 4.21.z-x86_64-<component>). A repo may list only
 # component tags under .../openshift/release/openshift/release; this script skips those and prefers
-# openshift/release/openshift-release-dev/ocp-release or openshift-release-dev/ocp-release when REPO is openshift/release.
+# openshift/release/openshift/release-images (oc-mirror v2), then openshift/release/openshift-release-dev/ocp-release
+# or openshift-release-dev/ocp-release when REPO is openshift/release.
 
 set -euo pipefail
 

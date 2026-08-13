@@ -25,7 +25,7 @@
           delete_on_termination: true
     tags: "{{ aws_nodes_ec2_kubernetes_cluster_tags | combine({'Name': aws_nodes_instance_name_tag, 'cluster': cluster_name, 'role': 'worker'}) }}"
     state: present
-  loop: "{{ range(0, worker_count) | list }}"
+  loop: "{{ range(0, worker_count | int) | list }}"
   register: aws_nodes_worker_launch
   tags:
     - aws_nodes
@@ -55,7 +55,7 @@
           delete_on_termination: true
     tags: "{{ aws_nodes_ec2_kubernetes_cluster_tags | combine({'Name': aws_nodes_instance_name_tag, 'cluster': cluster_name, 'role': 'gpu-worker'}) }}"
     state: present
-  loop: "{{ range(0, gpu_worker_count | default(0)) | list }}"
+  loop: "{{ range(0, gpu_worker_count | default(0) | int) | list }}"
   when: gpu_worker_count | default(0) | int > 0
   register: aws_nodes_gpu_worker_launch
   tags:

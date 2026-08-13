@@ -34,7 +34,7 @@ foundry_ingress_certificate_arn: ""  # ACM cert ARN from foundry; when set, uses
 # --- Cluster Configuration ---
 cluster_name: "iron-vault-01"
 base_domain: "fsi.internal"
-ocp_version: "4.21"
+ocp_version: "4.22"
 # True → oauth-openshift.apps on API NLB (#23/#24). False → same as *.apps / ingress (#30). Default follows ocp_version vs 4.21.
 forge_oauth_apps_via_api_nlb: "{{ ocp_version is version('4.21', '<') }}"
 
@@ -66,8 +66,9 @@ ssh_public_key_path: "{{ lookup('env', 'SSH_PUBLIC_KEY_PATH') | default('~/.ssh/
 ocp_ssh_private_key_path: "{{ lookup('env', 'OCP_SSH_PRIVATE_KEY_PATH') | default(ssh_public_key_path | regex_replace('\\.pub$', ''), true) }}"
 
 # --- Bastion (for API access; populated from foundry, no hardcoding) ---
-# When foundry provides bastion_public_ip/bastion_public_dns, install_dir is synced
-# to bastion and CSR approval/validation run there (reach cluster API in private VPC).
+# When foundry provides bastion_public_ip/bastion_public_dns, install artifacts (auth, ignition,
+# manifests, etc.) are rsync'd to bastion; openshift-install and oc are downloaded on the bastion
+# from the mirror (Linux). CSR approval/validation run there (reach cluster API in private VPC).
 # Use /var/tmp (not /tmp) - bastion /tmp is often tmpfs (~459MB) with insufficient space
 # for install dir + OCP tools (~800MB). Override via -e bastion_install_dir=... if needed.
 bastion_install_dir: "/var/tmp/gryphon-forge-install/{{ cluster_name }}"
@@ -103,9 +104,13 @@ mirror_registry_url: ""  # e.g. mirror.fsi.internal or mirror.fsi.internal:443 (
 # Aligns install-config + cluster mirror CRs with oc adm release mirror / IDMS instructions (OCP 4.12+).
 mirror_registry_use_image_digest_sources: true
 # Must match the repository path on the mirror — the segment after docker://<host>/ in your mirror command; tag discovery calls GET /v2/<path>/tags/list.
-# Example oc-mirror v2 (mirror-to-registry): ... "docker://${MIRROR_REGISTRY_URL}/openshift/release" --v2  ->  openshift/release below
-# oc-mirror: ocp-release tags are often under .../openshift-release-dev/ocp-release; .../openshift/release may be component-only tags.
-mirror_registry_release_path: "openshift/release"
+# Example oc-mirror v2 (mirror-to-registry): ... "docker://${MIRROR_REGISTRY_URL}/openshift/release" --v2
+#   Payload tags (4.x.z-x86_64) → openshift/release/openshift/release-images (set below)
+#   Component images → openshift/release/openshift/release (mirror_registry_art_dev_path)
+# Discovery also probes nested paths when this is left at openshift/release.
+mirror_registry_release_path: "openshift/release/openshift/release-images"
+# oc-mirror v2 art-dev / component mirror path (install-config + IDMS). Empty → same as mirror_registry_release_path.
+mirror_registry_art_dev_path: "openshift/release/openshift/release"
 # discover-mirror-release-tag.sh: GET ${scheme}://<mirror>/v2/... (set http only if the registry does not serve HTTPS).
 mirror_registry_discovery_scheme: "https"
 # PEM for the registry CA (or self-signed server cert). Required when the mirror is not in the system trust store.
@@ -156,7 +161,16 @@ forge_ocp_mirror_validate_certs: true
 # Same URLs used by the ignition role on the controller so install state matches bastion binaries.
 forge_ocp_installer_url_linux: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-install-linux.tar.gz"
 forge_ocp_client_url_linux: "{{ forge_ocp_mirror_base_url }}/{{ forge_ocp_mirror_channel }}/openshift-client-linux.tar.gz"
+# oc-mirror tarball in the same channel directory. Empty = auto (prefer oc-mirror.rhel9.tar.gz after HEAD
+# probe on EL9+/AL2023; otherwise oc-mirror.tar.gz). Do not set oc-mirror.rhel8.tar.gz — it 404s on the public mirror.
+forge_ocp_oc_mirror_archive: ""
+# When true: install oc-mirror next to openshift-install/oc from forge_ocp_mirror_* (Linux bastion + Linux controller).
+# Default false so CSR/bastion sync does not hard-fail when oc-mirror is unused; set true for disconnected mirroring.
+forge_oc_mirror_install_enabled: false
 # Controller: leave empty to auto-download openshift-install + oc into install_dir/bin (Linux/macOS).
 # Set both to absolute paths for air-gapped controllers or unsupported OS.
 openshift_install_binary_path: ""
 openshift_client_binary_path: ""
+# Controller only: absolute path to an existing oc-mirror binary. When set, Forge copies it into install_dir/bin/oc-mirror
+# (skips mirror download). Bastion still uses channel download when forge_oc_mirror_install_enabled is true.
+openshift_oc_mirror_binary_path: ""
