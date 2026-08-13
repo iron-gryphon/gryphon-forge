@@ -35,8 +35,8 @@ This document helps AI agents understand and collaborate on the **gryphon-forge*
 
 ## Dependencies
 
-- **Tools:** `ansible` in `$PATH`; `openshift-install`, `oc`, and (when `forge_oc_mirror_install_enabled`) `oc-mirror` are placed under `install_dir/bin/` on the controller (Linux mirror download) and `bastion_install_dir/bin/` on the bastion, unless overridden via `openshift_install_binary_path` / `openshift_client_binary_path` / `openshift_oc_mirror_binary_path` (controller oc-mirror only)
-- **Ansible collections:** `amazon.aws`, `community.aws`, `kubernetes.core`, `community.general` (see `requirements.yml`)
+- **Tools:** `ansible` in `$PATH`; `openshift-install`, `oc`, and (when `forge_oc_mirror_install_enabled`) `oc-mirror` are placed under `install_dir/bin/` on the controller (Linux mirror download) and `bastion_install_dir/bin/` on the bastion, unless overridden via `openshift_install_binary_path` / `openshift_client_binary_path` / `openshift_oc_mirror_binary_path` (controller oc-mirror only; pinned path is copied into `install_dir/bin/oc-mirror`)
+- **Ansible collections:** `amazon.aws`, `community.aws`, `kubernetes.core`, `community.general`, `ansible.posix` (see `requirements.yml`)
 - **Secrets:** Pull secret at `~/.openshift/pull-secret` (or `PULL_SECRET_PATH`), SSH public key at `~/.ssh/id_rsa.pub`
 
 ## Playbook Tags

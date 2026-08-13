@@ -508,16 +508,18 @@
         - csr_approval
         - validation
 
-    - name: Verify rsync is available on Ansible controller (synchronize invokes local rsync)
-      ansible.builtin.stat:
-        path: "{{ item }}"
-      register: forge_controller_rsync_stat
+    - name: Resolve rsync on Ansible controller PATH (synchronize invokes local rsync)
+      ansible.builtin.command:
+        argv:
+          - bash
+          - -c
+          - command -v rsync
+      register: forge_controller_rsync_which
+      changed_when: false
+      failed_when: false
       delegate_to: localhost
       connection: local
       run_once: true
-      loop:
-        - /usr/bin/rsync
-        - /bin/rsync
       tags:
         - csr_approval
         - validation
@@ -525,10 +527,11 @@
     - name: Require rsync on Ansible controller for synchronize
       ansible.builtin.assert:
         that:
-          - forge_controller_rsync_stat.results | selectattr('stat.exists', 'equalto', true) | list | length > 0
+          - forge_controller_rsync_which.rc | default(1) | int == 0
+          - forge_controller_rsync_which.stdout | default('') | trim | length > 0
         fail_msg: >-
           rsync is required on the Ansible controller for ansible.posix.synchronize (install rsync on this machine).
-          Examples: dnf install rsync / apt install rsync; macOS includes /usr/bin/rsync by default.
+          Examples: dnf install rsync / apt install rsync / brew install rsync; macOS often ships /usr/bin/rsync.
       tags:
         - csr_approval
         - validation
@@ -543,7 +546,10 @@
         dest: "{{ bastion_install_dir }}/"
         archive: true
         delete: false
-        times: false
+        # Keep mtimes so rsync quick-check stays idempotent. With ansible.cfg become=True the remote
+        # rsync --server runs as root; owner/group false prevents chown to the controller's uid/gid.
+        owner: false
+        group: false
         # delegate_to: localhost uses a local connection; rsync's ssh must get the bastion key explicitly.
         # Relative paths must be absolute: rsync's subprocess cwd is not the project directory (ssh -i would fail).
         private_key: >-
@@ -610,7 +616,8 @@
         - csr_approval
         - validation
 
-    # Rsync excludes bin/; populate Linux openshift-install + oc from mirror below.
+    # Rsync excludes bin/, but ELF checks remain: leftover non-Linux binaries from older runs (before
+    # --exclude=bin/) or a partial download must still trigger a re-fetch from the mirror.
     - name: Decide if bastion needs Linux openshift-install and oc from mirror
       ansible.builtin.shell: |
         set -euo pipefail
@@ -723,7 +730,7 @@
       vars:
         ignition_oc_mirror_target_bin_dir: "{{ bastion_install_dir }}/bin"
         ignition_oc_mirror_download_tmp: "/var/tmp/gryphon-forge-oc-mirror-dl-{{ cluster_name }}"
-      when: forge_oc_mirror_install_enabled | default(true) | bool
+      when: forge_oc_mirror_install_enabled | default(false) | bool
       tags:
         - csr_approval
         - validation

@@ -1,6 +1,6 @@
 ---
 # Ensure Linux oc exists under bastion_install_dir/bin for mirror digest preflight (client tarball only).
-# Controller may be macOS: sync or prior runs can leave Mach-O binaries; existence alone is not enough.
+# Rsync excludes bin/; this path still catches a missing binary or a leftover non-ELF (e.g. pre-exclude Mach-O) copy.
 - name: Check whether bastion oc is missing or not Linux ELF
   ansible.builtin.shell: |
     set -euo pipefail
@@ -12,7 +12,8 @@
     case "$h" in 7f454c46*) exit 0;; *) exit 1;; esac
   register: ignition_oc_on_bastion_elf_check
   changed_when: false
-  failed_when: false
+  # 0=ELF, 1=not ELF, 2=missing — any other rc is unexpected (permissions, missing od, etc.)
+  failed_when: ignition_oc_on_bastion_elf_check.rc not in [0, 1, 2]
 
 - name: Set fact — fetch Linux oc for mirror check when missing or wrong format (e.g. Darwin copy)
   ansible.builtin.set_fact:
