@@ -202,13 +202,37 @@ ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json -e ec2_key
    ```
    This deploys an EC2 in Nest with a container registry at `mirror.<base_domain>` (e.g. `mirror.fsi.internal`).
 
-2. **Run oc-mirror from bastion** to populate the mirror registry:
-   ```bash
-   # SSH to bastion; enable forge_oc_mirror_install_enabled to place oc-mirror under bastion_install_dir/bin.
-   # export PATH="/var/tmp/gryphon-forge-install/<cluster_name>/bin:$PATH"   # or your bastion_install_dir
-   # Create imageset-config.yaml, then e.g.: oc-mirror --v2 ... (see Red Hat docs for your OCP version)
+2. **Run oc-mirror from bastion** to populate the mirror registry. **This must be done before `deploy_cluster.yml`** — the cluster nodes need images available in the mirror at boot time.
+
+   Enable `forge_oc_mirror_install_enabled` (or install `oc-mirror` yourself) and put it on `PATH`, e.g. `export PATH="/var/tmp/gryphon-forge-install/<cluster_name>/bin:$PATH"`.
+
+   Create an `imageset-config.yaml` that specifies which OCP release and operators to mirror. Example for OCP 4.20:
+
+   ```yaml
+   kind: ImageSetConfiguration
+   apiVersion: mirror.openshift.io/v2alpha1
+   mirror:
+     platform:
+       channels:
+         - name: stable-4.20
+           minVersion: '4.20.17'
+           maxVersion: '4.20.17'
+     operators:
+       - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.20
    ```
-   See [Red Hat disconnected install docs](https://docs.openshift.com/container-platform/4.15/installing/disconnected_install/installing-mirroring-disconnected.html).
+
+   Run `oc-mirror` with `--v2` to mirror images to your private registry:
+
+   ```bash
+   oc mirror -c imageset-config.yaml \
+     --workspace file:///var/tmp/oc-mirror-workspace \
+     docker://mirror.<base_domain>/openshift/release --v2 \
+     --authfile ~/.openshift/pull-secret
+   ```
+
+   This discovers and copies all required images (typically 800+ for a release with operators). The process can take 30-60 minutes depending on bandwidth.
+
+   See [Red Hat disconnected install docs](https://docs.openshift.com/container-platform/4.20/installing/disconnected_install/installing-mirroring-disconnected.html) for full `imageset-config.yaml` options (additional operators, helm charts, etc.).
 
    Alternative to hand-writing `imageset-config.yaml`: [mirror-gui](https://github.com/openshift/mirror-gui), a web UI for `oc-mirror v2` with a visual config builder, operator catalog browsing, and run monitoring. It runs in its own Podman container - see its repo for setup. Gryphon Forge does not install or manage it.
 
