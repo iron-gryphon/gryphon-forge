@@ -34,7 +34,7 @@ foundry_ingress_certificate_arn: ""  # ACM cert ARN from foundry; when set, uses
 # --- Cluster Configuration ---
 cluster_name: "iron-vault-01"
 base_domain: "fsi.internal"
-ocp_version: "4.21"
+ocp_version: "4.22"
 # True → oauth-openshift.apps on API NLB (#23/#24). False → same as *.apps / ingress (#30). Default follows ocp_version vs 4.21.
 forge_oauth_apps_via_api_nlb: "{{ ocp_version is version('4.21', '<') }}"
 
@@ -104,9 +104,13 @@ mirror_registry_url: ""  # e.g. mirror.fsi.internal or mirror.fsi.internal:443 (
 # Aligns install-config + cluster mirror CRs with oc adm release mirror / IDMS instructions (OCP 4.12+).
 mirror_registry_use_image_digest_sources: true
 # Must match the repository path on the mirror — the segment after docker://<host>/ in your mirror command; tag discovery calls GET /v2/<path>/tags/list.
-# Example oc-mirror v2 (mirror-to-registry): ... "docker://${MIRROR_REGISTRY_URL}/openshift/release" --v2  ->  openshift/release below
-# oc-mirror: ocp-release tags are often under .../openshift-release-dev/ocp-release; .../openshift/release may be component-only tags.
-mirror_registry_release_path: "openshift/release"
+# Example oc-mirror v2 (mirror-to-registry): ... "docker://${MIRROR_REGISTRY_URL}/openshift/release" --v2
+#   Payload tags (4.x.z-x86_64) → openshift/release/openshift/release-images (set below)
+#   Component images → openshift/release/openshift/release (mirror_registry_art_dev_path)
+# Discovery also probes nested paths when this is left at openshift/release.
+mirror_registry_release_path: "openshift/release/openshift/release-images"
+# oc-mirror v2 art-dev / component mirror path (install-config + IDMS). Empty → same as mirror_registry_release_path.
+mirror_registry_art_dev_path: "openshift/release/openshift/release"
 # discover-mirror-release-tag.sh: GET ${scheme}://<mirror>/v2/... (set http only if the registry does not serve HTTPS).
 mirror_registry_discovery_scheme: "https"
 # PEM for the registry CA (or self-signed server cert). Required when the mirror is not in the system trust store.
