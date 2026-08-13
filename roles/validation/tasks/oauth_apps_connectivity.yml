@@ -26,9 +26,9 @@
       vars:
         _st: "{{ validation_oauth_apps_uri.status | default(-1) }}"
         _ok: "{{ validation_oauth_apps_uri is succeeded }}"
-        _via_api: "{{ forge_oauth_apps_via_api_nlb | default((ocp_version | default('4.14')) is version('4.21', '<')) }}"
-        _path_label: "{{ 'API NLB :443 express lane' if (_via_api | bool) else 'ingress (*.apps target)' }}"
-        _tg_hint: "{{ 'API NLB listener 443 / ' ~ cluster_name ~ '-oauth-tg' if (_via_api | bool) else 'ingress NLB/ALB' }}"
+        _via_api: "{{ forge_oauth_apps_via_api_nlb | default((ocp_version | default('4.14')) is version('4.21', '<')) | bool }}"
+        _path_label: "{{ 'API NLB :443 express lane' if _via_api else 'ingress (*.apps target)' }}"
+        _tg_hint: "{{ 'API NLB listener 443 / ' ~ cluster_name ~ '-oauth-tg' if _via_api else 'ingress NLB/ALB' }}"
         _oauth_conn_rep: >-
           {% if not _ok %}
           FAILED msg={{ (validation_oauth_apps_uri.msg | default('')) | regex_replace('\n', ' ') | truncate(200) }}
