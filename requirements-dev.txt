@@ -7,4 +7,4 @@ ansible-lint>=25.12.2
 boto3>=1.43.52
 
 # Required by ansible-lint for pre-commit integration
-pre-commit>=3.0.0
+pre-commit>=4.6.0
