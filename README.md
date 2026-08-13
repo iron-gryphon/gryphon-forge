@@ -202,12 +202,35 @@ ansible-playbook playbooks/deploy_cluster.yml -e @foundry_output.json -e ec2_key
    ```
    This deploys an EC2 in Nest with a container registry at `mirror.<base_domain>` (e.g. `mirror.fsi.internal`).
 
-2. **Run oc-mirror from bastion** to populate the mirror registry:
-   ```bash
-   # SSH to bastion, install oc-mirror, create imageset-config.yaml
-   # Then: oc mirror run --config imageset-config.yaml
+2. **Run oc-mirror from bastion** to populate the mirror registry. **This must be done before `deploy_cluster.yml`** — the cluster nodes need images available in the mirror at boot time.
+
+   Create an `imageset-config.yaml` that specifies which OCP release and operators to mirror. Example for OCP 4.20:
+
+   ```yaml
+   kind: ImageSetConfiguration
+   apiVersion: mirror.openshift.io/v2alpha1
+   mirror:
+     platform:
+       channels:
+         - name: stable-4.20
+           minVersion: '4.20.17'
+           maxVersion: '4.20.17'
+     operators:
+       - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.20
    ```
-   See [Red Hat disconnected install docs](https://docs.openshift.com/container-platform/4.15/installing/disconnected_install/installing-mirroring-disconnected.html).
+
+   Run `oc-mirror` with `--v2` to mirror images to your private registry:
+
+   ```bash
+   oc mirror -c imageset-config.yaml \
+     --workspace file:///var/tmp/oc-mirror-workspace \
+     docker://mirror.<base_domain>/openshift/release --v2 \
+     --authfile ~/.openshift/pull-secret
+   ```
+
+   This discovers and copies all required images (typically 800+ for a release with operators). The process can take 30-60 minutes depending on bandwidth.
+
+   See [Red Hat disconnected install docs](https://docs.openshift.com/container-platform/4.20/installing/disconnected_install/installing-mirroring-disconnected.html) for full `imageset-config.yaml` options (additional operators, helm charts, etc.).
 
 3. **Add mirror registry to pull secret** — The Red Hat pull secret does not include your private mirror. Merge mirror `auths` into the same JSON you use for installs (see **Iron Gryphon** air-gapped setup in the team profile README: merge on the **bastion** with `oc registry login` or `podman login` to a temp `--authfile`, then `jq` **only** the `auths` maps—`{auths: ($a.auths * $b.auths)}`—not a top-level merge that drops Red Hat entries). Copy the merged file to your Ansible controller and set `PULL_SECRET_PATH`, or set **`mirror_registry_dockerconfig_extra_path`** in Forge to a mirror-only dockerconfig for tag discovery only.
 
