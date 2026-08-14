@@ -41,12 +41,13 @@ forge_oauth_apps_via_api_nlb: "{{ ocp_version is version('4.21', '<') }}"
 # --- Node Counts ---
 master_count: 3
 worker_count: 3
-gpu_worker_count: 1
+gpu_worker_count: 3
 
 # --- Instance Sizing ---
 master_instance_type: "m6i.xlarge"
 worker_instance_type: "m6i.2xlarge"
-gpu_worker_instance_type: "g5.xlarge"
+# g6.4xlarge = 1× NVIDIA L4 (24 GiB); used for RHOAI GPU workloads
+gpu_worker_instance_type: "g6.4xlarge"
 
 # --- Paths ---
 install_dir: "{{ playbook_dir | default('.') }}/../installer/{{ cluster_name }}"

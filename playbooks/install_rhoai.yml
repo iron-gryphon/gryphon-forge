@@ -1,0 +1,104 @@
+---
+# Install Red Hat OpenShift AI (RHOAI) on an existing Gryphon Forge cluster.
+#
+# Prerequisites:
+#   - Cluster deployed and validated (playbooks/deploy_cluster.yml)
+#   - For disconnected: RHOAI operators/images mirrored (scripts/mirror-rhoai.sh)
+#     and optionally apply with -e rhoai_apply_mirror_resources=true
+#
+# Example:
+#   ansible-playbook playbooks/install_rhoai.yml -i inventory/hosts.yml \
+#     -e @../gryphon-foundry/foundry_output.json \
+#     -e foundry_output_path=../gryphon-foundry/foundry_output.json \
+#     -e bastion_ssh_private_key_path=../gryphon-foundry/bastion-key.pem \
+#     -e rhoai_channel=stable-3.4
+#
+# Tags: prep, storage, mirror_resources, operators, dsc, verify, rhoai
+
+- name: Load foundry outputs for RHOAI install
+  hosts: local
+  gather_facts: true
+  tasks:
+    - name: Check if foundry output exists
+      ansible.builtin.stat:
+        path: "{{ foundry_output_path | expanduser }}"
+      register: foundry_output_stat
+      tags:
+        - always
+
+    - name: Load foundry_output.json if present
+      ansible.builtin.include_vars:
+        file: "{{ foundry_output_path | expanduser }}"
+        name: foundry
+      when: foundry_output_stat.stat.exists | default(false)
+      tags:
+        - always
+
+    - name: Override with foundry outputs (RHOAI subset)
+      ansible.builtin.set_fact:
+        foundry_bastion_host: >-
+          {{ (((foundry | default({})).bastion_public_ip | default(bastion_public_ip)) | default({}))['value']
+          | default((((foundry | default({})).bastion_public_dns | default(bastion_public_dns)) | default({}))['value'])
+          | default((foundry | default({})).bastion_public_ip | default(bastion_public_ip))
+          | default((foundry | default({})).bastion_public_dns | default(bastion_public_dns))
+          | default('') }}
+        foundry_base_domain: >-
+          {{ (((foundry | default({})).ocp_base_domain | default(ocp_base_domain)) | default({}))['value']
+          | default((foundry | default({})).ocp_base_domain | default(ocp_base_domain) | default('')) }}
+        foundry_cluster_name: >-
+          {{ (((foundry | default({})).ocp_cluster_name | default(ocp_cluster_name)) | default({}))['value']
+          | default((foundry | default({})).ocp_cluster_name | default(ocp_cluster_name) | default('')) }}
+        mirror_registry_url: >-
+          {{ ((foundry | default({})).mirror_registry_url | default({}))['value']
+          | default((foundry | default({})).mirror_registry_url | default(mirror_registry_url) | default('')) }}
+        mirror_registry_additional_trust_bundle: >-
+          {{
+            (
+              ((foundry | default({})).mirror_registry_additional_trust_bundle | default({}))['value']
+              | default((foundry | default({})).mirror_registry_additional_trust_bundle
+              | default(mirror_registry_additional_trust_bundle) | default(''), true)
+            )
+            | default('', true)
+          }}
+      tags:
+        - always
+
+    - name: Apply foundry cluster identity overrides
+      ansible.builtin.set_fact:
+        cluster_name: "{{ foundry_cluster_name if (foundry_cluster_name | length > 0) else cluster_name }}"
+        base_domain: "{{ foundry_base_domain if (foundry_base_domain | length > 0) else base_domain }}"
+      tags:
+        - always
+
+    - name: Add bastion to inventory for API access
+      ansible.builtin.add_host:
+        name: bastion
+        groups: bastion
+        ansible_host: "{{ foundry_bastion_host }}"
+        ansible_user: "{{ bastion_ssh_user }}"
+        ansible_connection: ssh
+        ansible_ssh_private_key_file: "{{ bastion_ssh_private_key_path | expanduser }}"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+      when: foundry_bastion_host is defined and foundry_bastion_host | length > 0
+      tags:
+        - always
+
+- name: Install RHOAI
+  hosts: "{{ 'bastion' if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else 'local' }}"
+  gather_facts: true
+  vars:
+    cluster_name: "{{ hostvars['localhost']['cluster_name'] }}"
+    base_domain: "{{ hostvars['localhost']['base_domain'] }}"
+    forge_api_install_dir: "{{ bastion_install_dir if ((hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0) else install_dir }}"
+    forge_use_bastion_bins: "{{ (hostvars['localhost'] | default({})).get('foundry_bastion_host', '') | length > 0 }}"
+  roles:
+    - role: rhoai
+      vars:
+        rhoai_install_dir: "{{ forge_api_install_dir }}"
+        rhoai_controller_install_dir: "{{ install_dir }}"
+        rhoai_oc_cmd: >-
+          {{ forge_api_install_dir ~ '/bin/oc' if forge_use_bastion_bins
+             else (hostvars['localhost']['openshift_client_cmd'] | default('oc')) }}
+        rhoai_mirror_ca_pem: "{{ hostvars['localhost']['mirror_registry_additional_trust_bundle'] | default('', true) }}"
+      tags:
+        - rhoai

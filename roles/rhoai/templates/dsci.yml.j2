@@ -1,0 +1,17 @@
+apiVersion: dscinitialization.opendatahub.io/v1
+kind: DSCInitialization
+metadata:
+  name: {{ rhoai_dsci_name }}
+spec:
+  applicationsNamespace: {{ rhoai_applications_namespace }}
+  monitoring:
+    managementState: Managed
+    namespace: {{ rhoai_monitoring_namespace }}
+  trustedCABundle:
+    managementState: Managed
+{% if rhoai_dsci_ca_bundle | default('') | length > 0 %}
+    customCABundle: |
+{{ rhoai_dsci_ca_bundle | indent(6, true) }}
+{% else %}
+    customCABundle: ""
+{% endif %}

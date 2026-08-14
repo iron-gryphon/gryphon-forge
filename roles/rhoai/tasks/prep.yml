@@ -1,0 +1,92 @@
+---
+# Cluster readiness gates before RHOAI install
+
+- name: Verify kubeconfig exists
+  ansible.builtin.stat:
+    path: "{{ rhoai_install_dir }}/auth/kubeconfig"
+  register: rhoai_kubeconfig_stat
+
+- name: Fail if kubeconfig missing
+  ansible.builtin.fail:
+    msg: >-
+      Kubeconfig not found at {{ rhoai_install_dir }}/auth/kubeconfig.
+      Finish deploy_cluster (validation) first, or set rhoai_install_dir.
+  when: not rhoai_kubeconfig_stat.stat.exists
+
+- name: Set KUBECONFIG fact for subsequent tasks
+  ansible.builtin.set_fact:
+    rhoai_kubeconfig: "{{ rhoai_install_dir }}/auth/kubeconfig"
+
+- name: Check cluster API reachability
+  ansible.builtin.command:
+    cmd: "{{ rhoai_oc_cmd }} whoami --kubeconfig={{ rhoai_kubeconfig }}"
+  register: rhoai_oc_whoami
+  changed_when: false
+
+- name: Get cluster version
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get clusterversion version
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.status.desired.version}'
+  register: rhoai_cluster_version
+  changed_when: false
+  failed_when: false
+
+- name: List nodes not Ready
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get nodes --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.items[?(@.status.conditions[?(@.type=="Ready")].status!="True")].metadata.name}'
+  register: rhoai_not_ready_nodes
+  changed_when: false
+  failed_when: false
+
+- name: Fail when nodes are not Ready
+  ansible.builtin.fail:
+    msg: "Nodes not Ready: {{ rhoai_not_ready_nodes.stdout }}"
+  when:
+    - rhoai_fail_on_not_ready_nodes | bool
+    - rhoai_not_ready_nodes.stdout | default('') | length > 0
+
+- name: Count worker nodes (role=worker)
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get nodes -l node-role.kubernetes.io/worker
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.items[*].metadata.name}'
+  register: rhoai_worker_nodes
+  changed_when: false
+
+- name: Assert minimum worker node count
+  ansible.builtin.assert:
+    that:
+      - (rhoai_worker_nodes.stdout.split() | length) >= (rhoai_min_worker_nodes | int)
+    fail_msg: >-
+      RHOAI needs at least {{ rhoai_min_worker_nodes }} worker node(s);
+      found {{ rhoai_worker_nodes.stdout.split() | length }}
+      ({{ rhoai_worker_nodes.stdout | default('(none)') }}).
+
+- name: List cluster operators not Available
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get co --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.items[?(@.status.conditions[?(@.type=="Available")].status!="True")].metadata.name}'
+  register: rhoai_degraded_operators
+  changed_when: false
+  failed_when: false
+
+- name: Fail when cluster operators are not Available
+  ansible.builtin.fail:
+    msg: "Cluster operators not Available: {{ rhoai_degraded_operators.stdout }}"
+  when:
+    - rhoai_fail_on_degraded_operators | bool
+    - rhoai_degraded_operators.stdout | default('') | length > 0
+
+- name: Display prep summary
+  ansible.builtin.debug:
+    msg:
+      - "API identity: {{ rhoai_oc_whoami.stdout }}"
+      - "Cluster version: {{ rhoai_cluster_version.stdout | default('unknown') }}"
+      - "Workers: {{ rhoai_worker_nodes.stdout.split() | length }}"
+      - "RHOAI channel: {{ rhoai_channel }}"

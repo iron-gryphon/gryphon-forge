@@ -1,0 +1,69 @@
+---
+# RHOAI day-2 install: prep → storage → optional mirror CRs → operators → DSCI/DSC → verify
+
+- name: Include RHOAI cluster preparation
+  ansible.builtin.include_tasks:
+    file: prep.yml
+    apply:
+      tags:
+        - rhoai
+        - prep
+  tags:
+    - rhoai
+    - prep
+
+- name: Include RHOAI storage preparation
+  ansible.builtin.include_tasks:
+    file: storage.yml
+    apply:
+      tags:
+        - rhoai
+        - storage
+  tags:
+    - rhoai
+    - storage
+
+- name: Include apply mirrored catalog / IDMS resources
+  ansible.builtin.include_tasks:
+    file: apply_mirror_resources.yml
+    apply:
+      tags:
+        - rhoai
+        - mirror_resources
+  when: rhoai_apply_mirror_resources | bool
+  tags:
+    - rhoai
+    - mirror_resources
+
+- name: Include RHOAI operator subscriptions
+  ansible.builtin.include_tasks:
+    file: operators.yml
+    apply:
+      tags:
+        - rhoai
+        - operators
+  tags:
+    - rhoai
+    - operators
+
+- name: Include DSCInitialization and DataScienceCluster
+  ansible.builtin.include_tasks:
+    file: dsc.yml
+    apply:
+      tags:
+        - rhoai
+        - dsc
+  tags:
+    - rhoai
+    - dsc
+
+- name: Include RHOAI verification
+  ansible.builtin.include_tasks:
+    file: verify.yml
+    apply:
+      tags:
+        - rhoai
+        - verify
+  tags:
+    - rhoai
+    - verify

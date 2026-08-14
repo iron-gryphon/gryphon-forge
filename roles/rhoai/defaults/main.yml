@@ -1,0 +1,84 @@
+---
+# RHOAI (OpenShift AI) day-2 install defaults
+# Overridden by playbooks/install_rhoai.yml when targeting bastion.
+
+rhoai_install_dir: "{{ install_dir }}"
+rhoai_oc_cmd: oc
+rhoai_controller_install_dir: "{{ install_dir }}"
+rhoai_kubeconfig: "{{ rhoai_install_dir }}/auth/kubeconfig"
+
+# Versions / channels (confirm against access.redhat.com/articles/rhoai-supported-configs)
+rhoai_channel: "stable-3.4"
+rhoai_starting_csv: ""  # optional pin, e.g. rhods-operator.v3.4.2
+rhoai_cert_manager_channel: "stable-v1"
+rhoai_nfd_channel: "stable"
+rhoai_gpu_operator_channel: "stable"
+rhoai_servicemesh_channel: "stable"
+rhoai_servicemesh_package: "servicemeshoperator3"
+
+# Feature toggles
+rhoai_install_cert_manager: true
+# RHOAI 3.x RawDeployment does not need Knative/OSSM; set true for gateway / 2.x-style serving
+rhoai_install_servicemesh: false
+rhoai_install_gpu_stack: "{{ (gpu_worker_count | default(0) | int) > 0 }}"
+rhoai_require_package_manifests: true
+
+# Prep gates
+rhoai_min_worker_nodes: 2
+rhoai_fail_on_not_ready_nodes: true
+rhoai_fail_on_degraded_operators: true
+
+# Storage
+rhoai_ensure_default_storage_class: true
+rhoai_storage_class_name: "gp3-csi"
+rhoai_storage_class_provisioner: "ebs.csi.aws.com"
+rhoai_storage_class_type: "gp3"
+rhoai_storage_class_encrypted: true
+rhoai_require_ebs_csi_driver: true
+rhoai_storage_smoke_test: true
+rhoai_storage_smoke_namespace: "gryphon-rhoai-storage-test"
+rhoai_storage_smoke_pvc_size: "1Gi"
+rhoai_storage_smoke_timeout_seconds: 300
+
+# Optional: apply oc-mirror cluster-resources (IDMS/ITMS/CatalogSource) before operators
+rhoai_apply_mirror_resources: false
+rhoai_mirror_resources_dir: ""  # e.g. ~/oc-mirror-workspace-rhoai/working-dir/cluster-resources
+
+# Mirror registry CA for DSCI trustedCABundle (PEM string or path)
+rhoai_mirror_ca_pem: "{{ mirror_registry_additional_trust_bundle | default('', true) }}"
+rhoai_mirror_ca_file: ""  # if set and readable on the target host, preferred over pem var
+
+# DSC / DSCI
+rhoai_dsci_name: "default-dsci"
+rhoai_dsc_name: "default-dsc"
+rhoai_applications_namespace: "redhat-ods-applications"
+rhoai_monitoring_namespace: "redhat-ods-monitoring"
+rhoai_operator_namespace: "redhat-ods-operator"
+rhoai_dsci_timeout_seconds: 1200
+rhoai_dsc_timeout_seconds: 1800
+rhoai_csv_timeout_seconds: 1200
+rhoai_csv_retry_delay: 30
+
+# DSC component managementState (RHOAI 3.x / datasciencecluster v2)
+rhoai_dsc_components:
+  dashboard: Managed
+  workbenches: Managed
+  kserve: Managed
+  aipipelines: Managed
+  modelregistry: Managed
+  trainer: Removed
+  trainingoperator: Removed
+  kueue: Removed
+  ray: Removed
+  sparkoperator: Removed
+  trustyai: Removed
+  mlflowoperator: Removed
+  feastoperator: Removed
+  llamastackoperator: Removed
+
+rhoai_model_registries_namespace: "rhoai-model-registries"
+rhoai_kserve_raw_deployment_service_config: "Headless"
+
+# Report
+rhoai_report_filename: "rhoai-install-report.txt"
+rhoai_sync_report_to_controller: true
