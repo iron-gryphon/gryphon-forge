@@ -1,0 +1,14 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ rhoai_storage_class_name }}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+    description: "Gryphon Forge default gp3 via AWS EBS CSI (RHOAI / PVC workloads)"
+provisioner: {{ rhoai_storage_class_provisioner }}
+parameters:
+  type: {{ rhoai_storage_class_type }}
+  encrypted: "{{ 'true' if rhoai_storage_class_encrypted | bool else 'false' }}"
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer

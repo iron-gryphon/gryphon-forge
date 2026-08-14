@@ -1,0 +1,12 @@
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: {{ rhoai_sub_namespace }}-og
+  namespace: {{ rhoai_sub_namespace }}
+{% if rhoai_sub_og_scope | default('own') == 'all' %}
+spec: {}
+{% else %}
+spec:
+  targetNamespaces:
+    - {{ rhoai_sub_namespace }}
+{% endif %}

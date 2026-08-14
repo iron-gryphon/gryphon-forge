@@ -1,5 +1,6 @@
 ---
 # Install openshift-install + oc under install_dir/bin from forge_ocp_mirror_* (same channel as bastion).
+# Optionally installs or pins oc-mirror on Linux controllers (see ensure_oc_mirror_install.yml).
 # Sets host facts openshift_install_cmd and openshift_client_cmd for later plays (localhost).
 
 - name: Stat openshift-install under install_dir
@@ -74,6 +75,32 @@
     - aws_nodes
     - ec2
 
+- name: Stat user-pinned oc-mirror binary
+  ansible.builtin.stat:
+    path: "{{ openshift_oc_mirror_binary_path }}"
+  register: ignition_oc_mirror_pin_stat
+  when: openshift_oc_mirror_binary_path | default('') | length > 0
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Require pinned oc-mirror path to exist
+  ansible.builtin.assert:
+    that:
+      - ignition_oc_mirror_pin_stat.stat.exists | default(false)
+      - ignition_oc_mirror_pin_stat.stat.isreg | default(false) or ignition_oc_mirror_pin_stat.stat.islnk | default(false)
+      - ignition_oc_mirror_pin_stat.stat.executable | default(false)
+    fail_msg: >-
+      openshift_oc_mirror_binary_path={{ openshift_oc_mirror_binary_path }} is missing or not executable.
+  when: openshift_oc_mirror_binary_path | default('') | length > 0
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
 - name: Set mirror archive names for controller OS
   ansible.builtin.set_fact:
     ignition_ocp_installer_archive: "{{ _inst_arch }}"
@@ -120,12 +147,17 @@
   loop:
     - "{{ install_dir }}/bin"
     - "{{ install_dir }}/.forge-download-cache"
-  when:
-    - >-
-        (openshift_install_binary_path | default('') | length == 0
-        and not ignition_ocp_install_in_dir_stat.stat.exists | default(false))
-        or (openshift_client_binary_path | default('') | length == 0
-        and not ignition_ocp_oc_in_dir_stat.stat.exists | default(false))
+  when: >-
+    (
+      (openshift_install_binary_path | default('') | length == 0
+      and not ignition_ocp_install_in_dir_stat.stat.exists | default(false))
+      or (openshift_client_binary_path | default('') | length == 0
+      and not ignition_ocp_oc_in_dir_stat.stat.exists | default(false))
+      or (forge_oc_mirror_install_enabled | default(false) | bool
+          and openshift_oc_mirror_binary_path | default('') | length == 0
+          and ansible_facts['system'] == 'Linux')
+      or (openshift_oc_mirror_binary_path | default('') | length > 0)
+    )
   tags:
     - ignition
     - config
@@ -315,6 +347,48 @@
     fail_msg: >-
       oc missing at {{ openshift_client_cmd }}.
       Check mirror URL (forge_ocp_mirror_base_url / forge_ocp_mirror_channel) and network access.
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Install pinned oc-mirror into install_dir/bin
+  ansible.builtin.copy:
+    src: "{{ openshift_oc_mirror_binary_path | expanduser }}"
+    dest: "{{ install_dir }}/bin/oc-mirror"
+    mode: "0755"
+  when:
+    - openshift_oc_mirror_binary_path | default('') | length > 0
+    - ansible_facts['system'] == 'Linux'
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Set openshift_oc_mirror_cmd when pinned or installed under install_dir/bin  # noqa: var-naming[no-role-prefix]
+  ansible.builtin.set_fact:
+    openshift_oc_mirror_cmd: "{{ install_dir }}/bin/oc-mirror"
+  when:
+    - >-
+      (openshift_oc_mirror_binary_path | default('') | length > 0)
+      or (forge_oc_mirror_install_enabled | default(false) | bool and ansible_facts['system'] == 'Linux')
+  tags:
+    - ignition
+    - config
+    - aws_nodes
+    - ec2
+
+- name: Ensure controller oc-mirror matches OCP mirror channel (Linux)
+  ansible.builtin.include_tasks: ensure_oc_mirror_install.yml
+  vars:
+    ignition_oc_mirror_target_bin_dir: "{{ install_dir }}/bin"
+    ignition_oc_mirror_download_tmp: "{{ install_dir }}/.forge-download-cache/oc-mirror-extract"
+  when:
+    - forge_oc_mirror_install_enabled | default(false) | bool
+    - openshift_oc_mirror_binary_path | default('') | length == 0
+    - ansible_facts['system'] == 'Linux'
   tags:
     - ignition
     - config

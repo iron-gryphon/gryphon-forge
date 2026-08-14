@@ -1,0 +1,40 @@
+apiVersion: datasciencecluster.opendatahub.io/v2
+kind: DataScienceCluster
+metadata:
+  name: {{ rhoai_dsc_name }}
+spec:
+  components:
+    dashboard:
+      managementState: {{ rhoai_dsc_components.dashboard }}
+    workbenches:
+      managementState: {{ rhoai_dsc_components.workbenches }}
+    kserve:
+      managementState: {{ rhoai_dsc_components.kserve }}
+{% if rhoai_dsc_components.kserve == 'Managed' %}
+      rawDeploymentServiceConfig: {{ rhoai_kserve_raw_deployment_service_config }}
+{% endif %}
+    aipipelines:
+      managementState: {{ rhoai_dsc_components.aipipelines }}
+    modelregistry:
+      managementState: {{ rhoai_dsc_components.modelregistry }}
+{% if rhoai_dsc_components.modelregistry == 'Managed' %}
+      registriesNamespace: {{ rhoai_model_registries_namespace }}
+{% endif %}
+    trainer:
+      managementState: {{ rhoai_dsc_components.trainer }}
+    trainingoperator:
+      managementState: {{ rhoai_dsc_components.trainingoperator }}
+    kueue:
+      managementState: {{ rhoai_dsc_components.kueue }}
+    ray:
+      managementState: {{ rhoai_dsc_components.ray }}
+    sparkoperator:
+      managementState: {{ rhoai_dsc_components.sparkoperator }}
+    trustyai:
+      managementState: {{ rhoai_dsc_components.trustyai }}
+    mlflowoperator:
+      managementState: {{ rhoai_dsc_components.mlflowoperator }}
+    feastoperator:
+      managementState: {{ rhoai_dsc_components.feastoperator }}
+    llamastackoperator:
+      managementState: {{ rhoai_dsc_components.llamastackoperator }}

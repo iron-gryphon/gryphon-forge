@@ -1,0 +1,107 @@
+---
+# Install operators in dependency order (cert-manager → optional mesh/GPU → RHOAI)
+
+- name: Install cert-manager operator
+  ansible.builtin.include_tasks: subscribe_operator.yml
+  vars:
+    rhoai_sub_package: openshift-cert-manager-operator
+    rhoai_sub_namespace: cert-manager-operator
+    rhoai_sub_channel: "{{ rhoai_cert_manager_channel }}"
+    rhoai_sub_og_scope: own
+    rhoai_sub_starting_csv: ""
+  when: rhoai_install_cert_manager | bool
+
+- name: Wait for cert-manager Certificate CRD
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get crd certificates.cert-manager.io
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.metadata.name}'
+  register: rhoai_cert_manager_crd
+  until: rhoai_cert_manager_crd.stdout == 'certificates.cert-manager.io'
+  retries: 60
+  delay: 10
+  changed_when: false
+  when: rhoai_install_cert_manager | bool
+
+- name: Install Service Mesh 3 operator
+  ansible.builtin.include_tasks: subscribe_operator.yml
+  vars:
+    rhoai_sub_package: "{{ rhoai_servicemesh_package }}"
+    rhoai_sub_namespace: openshift-operators
+    rhoai_sub_channel: "{{ rhoai_servicemesh_channel }}"
+    rhoai_sub_og_scope: all
+    rhoai_sub_starting_csv: ""
+  when: rhoai_install_servicemesh | bool
+
+- name: Install NFD operator
+  ansible.builtin.include_tasks: subscribe_operator.yml
+  vars:
+    rhoai_sub_package: nfd
+    rhoai_sub_namespace: openshift-nfd
+    rhoai_sub_channel: "{{ rhoai_nfd_channel }}"
+    rhoai_sub_og_scope: own
+    rhoai_sub_starting_csv: ""
+  when: rhoai_install_gpu_stack | bool
+
+- name: Include NFD instance creation
+  ansible.builtin.include_tasks: nfd_instance.yml
+  when: rhoai_install_gpu_stack | bool
+
+- name: Install NVIDIA GPU operator
+  ansible.builtin.include_tasks: subscribe_operator.yml
+  vars:
+    rhoai_sub_package: gpu-operator-certified
+    rhoai_sub_namespace: nvidia-gpu-operator
+    rhoai_sub_channel: "{{ rhoai_gpu_operator_channel }}"
+    rhoai_sub_og_scope: own
+    rhoai_sub_starting_csv: ""
+  when: rhoai_install_gpu_stack | bool
+
+- name: Include GPU ClusterPolicy creation
+  ansible.builtin.include_tasks: gpu_cluster_policy.yml
+  when: rhoai_install_gpu_stack | bool
+
+- name: Install RHOAI (rhods-operator)
+  ansible.builtin.include_tasks: subscribe_operator.yml
+  vars:
+    rhoai_sub_package: rhods-operator
+    rhoai_sub_namespace: "{{ rhoai_operator_namespace }}"
+    rhoai_sub_channel: "{{ rhoai_channel }}"
+    rhoai_sub_og_scope: all
+    rhoai_sub_starting_csv: "{{ rhoai_starting_csv }}"
+
+- name: Wait for DataScienceCluster CRD
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get crd datascienceclusters.datasciencecluster.opendatahub.io
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.metadata.name}'
+  register: rhoai_dsc_crd
+  until: rhoai_dsc_crd.stdout | default('') | length > 0
+  retries: 60
+  delay: 10
+  changed_when: false
+  failed_when: false
+
+- name: Wait for DSCInitialization CRD
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get crd dscinitializations.dscinitialization.opendatahub.io
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.metadata.name}'
+  register: rhoai_dsci_crd
+  until: rhoai_dsci_crd.stdout | default('') | length > 0
+  retries: 60
+  delay: 10
+  changed_when: false
+  failed_when: false
+
+- name: Fail if RHOAI CRDs are missing
+  ansible.builtin.fail:
+    msg: >-
+      RHOAI CRDs not registered after rhods-operator install
+      (dsc={{ rhoai_dsc_crd.stdout | default('') }}, dsci={{ rhoai_dsci_crd.stdout | default('') }}).
+  when: >-
+    (rhoai_dsc_crd.stdout | default('') | length == 0)
+    or (rhoai_dsci_crd.stdout | default('') | length == 0)

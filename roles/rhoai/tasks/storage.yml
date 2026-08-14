@@ -1,0 +1,229 @@
+---
+# Ensure a usable default StorageClass (AWS EBS CSI) for RHOAI PVCs
+
+- name: List StorageClasses
+  ansible.builtin.command:
+    cmd: "{{ rhoai_oc_cmd }} get sc --kubeconfig={{ rhoai_kubeconfig }} -o json"
+  register: rhoai_sc_json
+  changed_when: false
+
+- name: Parse StorageClass inventory
+  ansible.builtin.set_fact:
+    rhoai_storage_classes: "{{ (rhoai_sc_json.stdout | from_json)['items'] | default([]) }}"
+
+- name: Resolve default StorageClass name via jsonpath
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get sc --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}'
+  register: rhoai_default_sc_name
+  changed_when: false
+  failed_when: false
+
+- name: Check AWS EBS CSI ClusterCSIDriver
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get clustercsidriver ebs.csi.aws.com
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.metadata.name}'
+  register: rhoai_ebs_csi_driver
+  changed_when: false
+  failed_when: false
+
+- name: Fail when EBS CSI driver is required but missing
+  ansible.builtin.fail:
+    msg: >-
+      ClusterCSIDriver ebs.csi.aws.com was not found. OpenShift on AWS normally
+      installs this via the Cluster Storage Operator. Investigate
+      `oc get co storage` / `oc get pods -n openshift-cluster-csi-drivers`
+      before installing RHOAI (workbenches need PersistentVolumeClaims).
+  when:
+    - rhoai_require_ebs_csi_driver | bool
+    - rhoai_ebs_csi_driver.stdout | default('') | length == 0
+
+- name: Check EBS CSI controller pods
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get pods -n openshift-cluster-csi-drivers
+      -l app=aws-ebs-csi-driver-controller
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.items[*].status.phase}'
+  register: rhoai_ebs_csi_pods
+  changed_when: false
+  failed_when: false
+  when: rhoai_ebs_csi_driver.stdout | default('') | length > 0
+
+- name: Fail when EBS CSI controller pods are not Running
+  ansible.builtin.fail:
+    msg: >-
+      aws-ebs-csi-driver-controller pods are not Running
+      (phases: {{ rhoai_ebs_csi_pods.stdout | default('none') }}).
+      Fix CSI before RHOAI PVC workloads.
+  when:
+    - rhoai_require_ebs_csi_driver | bool
+    - rhoai_ebs_csi_driver.stdout | default('') | length > 0
+    - rhoai_ebs_csi_pods is defined
+    - rhoai_ebs_csi_pods.stdout is defined
+    - (rhoai_ebs_csi_pods.stdout.split() | length) == 0
+      or ('Pending' in rhoai_ebs_csi_pods.stdout)
+      or ('Failed' in rhoai_ebs_csi_pods.stdout)
+      or ('CrashLoopBackOff' in rhoai_ebs_csi_pods.stdout)
+
+- name: Ensure a default StorageClass exists
+  when:
+    - rhoai_ensure_default_storage_class | bool
+    - rhoai_default_sc_name.stdout | default('') | trim | length == 0
+  block:
+    - name: Look for known EBS CSI StorageClass names
+      ansible.builtin.set_fact:
+        rhoai_candidate_sc: >-
+          {{
+            (rhoai_storage_classes | map(attribute='metadata.name') | list)
+            | select('match', '^(gp3-csi|gp2-csi|gp3|gp2)$')
+            | list
+            | first
+            | default('')
+          }}
+
+    - name: Annotate existing StorageClass as default
+      ansible.builtin.command:
+        cmd: >-
+          {{ rhoai_oc_cmd }} annotate sc {{ rhoai_candidate_sc }}
+          storageclass.kubernetes.io/is-default-class=true
+          --overwrite --kubeconfig={{ rhoai_kubeconfig }}
+      when: rhoai_candidate_sc | length > 0
+      register: rhoai_sc_annotate
+      changed_when: rhoai_sc_annotate.rc == 0
+
+    - name: Refresh default StorageClass name after annotate
+      ansible.builtin.command:
+        cmd: >-
+          {{ rhoai_oc_cmd }} get sc --kubeconfig={{ rhoai_kubeconfig }}
+          -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}'
+      register: rhoai_default_sc_name
+      changed_when: false
+      failed_when: false
+      when: rhoai_candidate_sc | length > 0
+
+    - name: Create gp3 StorageClass when still no default
+      when: rhoai_default_sc_name.stdout | default('') | trim | length == 0
+      block:
+        - name: Stage StorageClass tempfile
+          ansible.builtin.tempfile:
+            state: file
+            suffix: -gp3-sc.yml
+          register: rhoai_sc_tmp
+
+        - name: Write StorageClass manifest
+          ansible.builtin.copy:
+            dest: "{{ rhoai_sc_tmp.path }}"
+            mode: "0644"
+            content: "{{ lookup('template', 'storageclass-gp3.yml.j2') }}"
+
+        - name: Apply StorageClass
+          ansible.builtin.command:
+            cmd: "{{ rhoai_oc_cmd }} apply --kubeconfig={{ rhoai_kubeconfig }} -f {{ rhoai_sc_tmp.path }}"
+          register: rhoai_sc_apply
+          changed_when: "'created' in rhoai_sc_apply.stdout or 'configured' in rhoai_sc_apply.stdout"
+
+        - name: Remove StorageClass tempfile
+          ansible.builtin.file:
+            path: "{{ rhoai_sc_tmp.path }}"
+            state: absent
+
+        - name: Record created default StorageClass
+          ansible.builtin.set_fact:
+            rhoai_default_sc_name:
+              stdout: "{{ rhoai_storage_class_name }}"
+              stderr: ""
+              rc: 0
+
+- name: Fail when no default StorageClass is available
+  ansible.builtin.fail:
+    msg: >-
+      No default StorageClass found and none could be created.
+      RHOAI workbenches and pipelines require dynamic provisioning
+      (typically ebs.csi.aws.com). Create a StorageClass or set
+      rhoai_ensure_default_storage_class / rhoai_storage_class_*.
+  when: rhoai_default_sc_name.stdout | default('') | trim | length == 0
+
+- name: Set effective StorageClass for smoke test
+  ansible.builtin.set_fact:
+    rhoai_effective_storage_class: "{{ rhoai_default_sc_name.stdout.split() | first }}"
+
+- name: Run StorageClass PVC smoke test
+  when: rhoai_storage_smoke_test | bool
+  vars:
+    rhoai_storage_smoke_storage_class: "{{ rhoai_effective_storage_class }}"
+    rhoai_sub_namespace: "{{ rhoai_storage_smoke_namespace }}"
+  block:
+    - name: Stage smoke-test manifests directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: -rhoai-smoke
+      register: rhoai_smoke_dir
+
+    - name: Write smoke-test namespace manifest
+      ansible.builtin.copy:
+        dest: "{{ rhoai_smoke_dir.path }}/namespace.yml"
+        mode: "0644"
+        content: "{{ lookup('template', 'namespace.yml.j2') }}"
+
+    - name: Write smoke PVC manifest
+      ansible.builtin.copy:
+        dest: "{{ rhoai_smoke_dir.path }}/pvc.yml"
+        mode: "0644"
+        content: "{{ lookup('template', 'storage-smoke-pvc.yml.j2') }}"
+
+    - name: Apply smoke-test namespace and PVC
+      ansible.builtin.command:
+        cmd: "{{ rhoai_oc_cmd }} apply --kubeconfig={{ rhoai_kubeconfig }} -f {{ rhoai_smoke_dir.path }}"
+      register: rhoai_smoke_apply
+      changed_when: "'created' in rhoai_smoke_apply.stdout or 'configured' in rhoai_smoke_apply.stdout"
+
+    # WaitForFirstConsumer classes stay Pending until a pod mounts the claim — that is healthy.
+    # Do not schedule a consumer pod here: disconnected clusters often cannot pull public pause images yet.
+    - name: Wait for smoke PVC Bound or WaitForFirstConsumer
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          phase=$({{ rhoai_oc_cmd }} get pvc gryphon-rhoai-smoke
+          -n {{ rhoai_storage_smoke_namespace }}
+          --kubeconfig={{ rhoai_kubeconfig }} -o jsonpath='{.status.phase}');
+          if [ "$phase" = "Bound" ]; then echo Bound; exit 0; fi;
+          reason=$({{ rhoai_oc_cmd }} get events -n {{ rhoai_storage_smoke_namespace }}
+          --kubeconfig={{ rhoai_kubeconfig }}
+          --field-selector involvedObject.name=gryphon-rhoai-smoke
+          -o jsonpath='{.items[-1:].reason}' 2>/dev/null || true);
+          if [ "$phase" = "Pending" ] && [ "$reason" = "WaitForFirstConsumer" ]; then
+            echo WaitForFirstConsumer; exit 0;
+          fi;
+          echo "$phase:$reason"; exit 1
+      args:
+        executable: /bin/bash
+      register: rhoai_smoke_pvc_phase
+      until: rhoai_smoke_pvc_phase.rc == 0
+      retries: "{{ ((rhoai_storage_smoke_timeout_seconds | int) / 10) | int }}"
+      delay: 10
+      changed_when: false
+
+    - name: Delete smoke-test namespace
+      ansible.builtin.command:
+        cmd: >-
+          {{ rhoai_oc_cmd }} delete namespace {{ rhoai_storage_smoke_namespace }}
+          --kubeconfig={{ rhoai_kubeconfig }}
+          --ignore-not-found=true --wait=false
+      register: rhoai_smoke_cleanup
+      changed_when: "'deleted' in rhoai_smoke_cleanup.stdout"
+
+    - name: Remove smoke-test staging directory
+      ansible.builtin.file:
+        path: "{{ rhoai_smoke_dir.path }}"
+        state: absent
+
+- name: Display storage summary
+  ansible.builtin.debug:
+    msg:
+      - "Default StorageClass: {{ rhoai_effective_storage_class }}"
+      - "EBS CSI driver: {{ rhoai_ebs_csi_driver.stdout | default('missing') }}"
+      - "PVC smoke test: {{ 'passed' if rhoai_storage_smoke_test | bool else 'skipped' }}"

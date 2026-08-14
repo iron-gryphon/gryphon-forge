@@ -1,0 +1,102 @@
+---
+# Post-install checks and report
+
+- name: Get DSCI status
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get dscinitialization {{ rhoai_dsci_name }}
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o custom-columns=NAME:.metadata.name,PHASE:.status.phase --no-headers
+  register: rhoai_verify_dsci
+  changed_when: false
+  failed_when: false
+
+- name: Get DSC status
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get datasciencecluster {{ rhoai_dsc_name }}
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o custom-columns=NAME:.metadata.name,PHASE:.status.phase --no-headers
+  register: rhoai_verify_dsc
+  changed_when: false
+  failed_when: false
+
+- name: Get RHOAI dashboard route
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get route rhods-dashboard
+      -n {{ rhoai_applications_namespace }}
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.spec.host}'
+  register: rhoai_dashboard_host
+  changed_when: false
+  failed_when: false
+
+- name: List non-running pods in applications namespace
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      {{ rhoai_oc_cmd }} get pods -n {{ rhoai_applications_namespace }}
+      --kubeconfig={{ rhoai_kubeconfig }} --no-headers 2>/dev/null
+      | awk '$3!="Running" && $3!="Completed" {print}' || true
+  args:
+    executable: /bin/bash
+  register: rhoai_bad_pods
+  changed_when: false
+  failed_when: false
+
+- name: Write RHOAI install report
+  ansible.builtin.copy:
+    dest: "{{ rhoai_install_dir }}/{{ rhoai_report_filename }}"
+    mode: "0644"
+    content: |
+      Gryphon Forge RHOAI install report
+      Generated: {{ ansible_facts['date_time']['iso8601'] | default('unknown') }}
+      Ansible host: {{ inventory_hostname }}
+      Cluster version: {{ rhoai_cluster_version.stdout | default('unknown') }}
+      Default StorageClass: {{ rhoai_effective_storage_class | default('unknown') }}
+      RHOAI channel: {{ rhoai_channel }}
+
+      --- DSCInitialization ---
+      {{ rhoai_verify_dsci.stdout | default('') }}
+
+      --- DataScienceCluster ---
+      {{ rhoai_verify_dsc.stdout | default('') }}
+
+      --- Dashboard ---
+      {% if rhoai_dashboard_host.stdout | default('') | length > 0 %}
+      https://{{ rhoai_dashboard_host.stdout }}
+      {% else %}
+      (route not found yet)
+      {% endif %}
+
+      --- Non-running pods in {{ rhoai_applications_namespace }} ---
+      {{ rhoai_bad_pods.stdout | default('(none)') }}
+
+- name: Fetch RHOAI report to controller
+  ansible.builtin.fetch:
+    src: "{{ rhoai_install_dir }}/{{ rhoai_report_filename }}"
+    dest: "{{ rhoai_controller_install_dir }}/{{ rhoai_report_filename }}"
+    flat: true
+  when:
+    - inventory_hostname == 'bastion'
+    - rhoai_sync_report_to_controller | bool
+
+- name: Display RHOAI summary
+  ansible.builtin.debug:
+    msg:
+      - "DSCI: {{ rhoai_verify_dsci.stdout | default('unknown') }}"
+      - "DSC: {{ rhoai_verify_dsc.stdout | default('unknown') }}"
+      - >-
+        Dashboard:
+        {{ ('https://' ~ rhoai_dashboard_host.stdout)
+           if (rhoai_dashboard_host.stdout | default('') | length > 0)
+           else '(pending)' }}
+      - "Report: {{ rhoai_install_dir }}/{{ rhoai_report_filename }}"
+
+- name: Fail when dashboard route is missing
+  ansible.builtin.fail:
+    msg: >-
+      rhods-dashboard route not found in {{ rhoai_applications_namespace }}.
+      See {{ rhoai_install_dir }}/{{ rhoai_report_filename }}.
+  when: rhoai_dashboard_host.stdout | default('') | length == 0

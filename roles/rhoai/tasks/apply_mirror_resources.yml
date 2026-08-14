@@ -1,0 +1,80 @@
+---
+# Apply IDMS / ITMS / CatalogSource YAMLs produced by oc-mirror (scripts/mirror-rhoai.sh)
+
+- name: Require rhoai_mirror_resources_dir
+  ansible.builtin.assert:
+    that:
+      - rhoai_mirror_resources_dir | default('') | length > 0
+    fail_msg: >-
+      rhoai_apply_mirror_resources=true but rhoai_mirror_resources_dir is empty.
+      Point it at oc-mirror working-dir/cluster-resources
+      (see scripts/mirror-rhoai.sh).
+
+- name: Stat mirror resources directory
+  ansible.builtin.stat:
+    path: "{{ rhoai_mirror_resources_dir | expanduser }}"
+  register: rhoai_mirror_dir_stat
+
+- name: Fail if mirror resources directory missing
+  ansible.builtin.fail:
+    msg: "Mirror resources directory not found: {{ rhoai_mirror_resources_dir }}"
+  when: not rhoai_mirror_dir_stat.stat.exists or not rhoai_mirror_dir_stat.stat.isdir
+
+- name: Find YAML manifests in mirror resources directory
+  ansible.builtin.find:
+    paths: "{{ rhoai_mirror_resources_dir | expanduser }}"
+    patterns:
+      - "*.yaml"
+      - "*.yml"
+    recurse: true
+  register: rhoai_mirror_yaml_files
+
+- name: Fail if no mirror resource YAMLs found
+  ansible.builtin.fail:
+    msg: "No YAML files under {{ rhoai_mirror_resources_dir }}"
+  when: rhoai_mirror_yaml_files.files | length == 0
+
+# Default OperatorHub catalogs pull registry.redhat.io and block OLM resolution in air gaps.
+- name: Disable default OperatorHub catalog sources
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} patch OperatorHub cluster --type json
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -p '[{"op":"add","path":"/spec/disableAllDefaultSources","value":true}]'
+  register: rhoai_operatorhub_patch
+  changed_when: "'patched' in rhoai_operatorhub_patch.stdout or 'configured' in rhoai_operatorhub_patch.stdout"
+
+- name: Remove default CatalogSources if still present
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} delete catalogsource
+      redhat-operators certified-operators community-operators redhat-marketplace
+      -n openshift-marketplace --kubeconfig={{ rhoai_kubeconfig }}
+      --ignore-not-found=true
+  register: rhoai_default_cs_delete
+  changed_when: "'deleted' in rhoai_default_cs_delete.stdout"
+
+- name: Apply mirrored cluster resources
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} apply --kubeconfig={{ rhoai_kubeconfig }}
+      -f {{ item.path }}
+  loop: "{{ rhoai_mirror_yaml_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  register: rhoai_mirror_apply
+  changed_when: "'created' in rhoai_mirror_apply.stdout or 'configured' in rhoai_mirror_apply.stdout"
+
+- name: Wait for PackageManifest rhods-operator
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get packagemanifest rhods-operator
+      -n openshift-marketplace
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.metadata.name}'
+  register: rhoai_pkg_rhods
+  until: rhoai_pkg_rhods.stdout == 'rhods-operator'
+  retries: 60
+  delay: 10
+  changed_when: false
+  when: rhoai_require_package_manifests | bool

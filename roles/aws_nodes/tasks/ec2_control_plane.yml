@@ -169,7 +169,7 @@
           delete_on_termination: true
     tags: "{{ aws_nodes_ec2_kubernetes_cluster_tags | combine({'Name': aws_nodes_instance_name_tag, 'cluster': cluster_name, 'role': 'master'}) }}"
     state: present
-  loop: "{{ range(0, master_count) | list }}"
+  loop: "{{ range(0, master_count | int) | list }}"
   register: aws_nodes_master_launch
   tags:
     - aws_nodes

@@ -27,16 +27,20 @@ This document helps AI agents understand and collaborate on the **gryphon-forge*
 | `inventory/hosts.yml` | Host inventory (local, bootstrap, masters, workers, gpu_workers) |
 | `playbooks/deploy_cluster.yml` | Main deployment playbook |
 | `playbooks/destroy_cluster.yml` | Teardown playbook |
+| `playbooks/install_rhoai.yml` | Day-2 RHOAI install (prep, storage, operators, DSC) |
 | `roles/ignition/` | Ignition generation (wraps `openshift-install`) |
 | `roles/aws_nodes/` | EC2, ELB, Route53 provisioning |
 | `roles/csr_approver/` | CSR approval during bootstrap |
 | `roles/validation/` | Post-install validation |
+| `roles/rhoai/` | OpenShift AI install after the cluster is up |
+| `scripts/mirror-rhoai.sh` | oc-mirror v2 helper for RHOAI catalogs/images |
+| `docs/RHOAI-disconnected-install.md` | Disconnected RHOAI + ai-accelerator guide |
 | `foundry_output.json` | Consumed from gryphon-foundry (VPC, subnets, SG, hosted zone) |
 
 ## Dependencies
 
-- **Tools:** `ansible` in `$PATH`; `openshift-install` and `oc` are placed under `install_dir/bin/` on the controller (mirror download) and `bastion_install_dir/bin/` on the bastion, unless overridden via `openshift_install_binary_path` / `openshift_client_binary_path`
-- **Ansible collections:** `amazon.aws`, `community.aws`, `kubernetes.core`, `community.general` (see `requirements.yml`)
+- **Tools:** `ansible` in `$PATH`; `openshift-install`, `oc`, and (when `forge_oc_mirror_install_enabled`) `oc-mirror` are placed under `install_dir/bin/` on the controller (Linux mirror download) and `bastion_install_dir/bin/` on the bastion, unless overridden via `openshift_install_binary_path` / `openshift_client_binary_path` / `openshift_oc_mirror_binary_path` (controller oc-mirror only; pinned path is copied into `install_dir/bin/oc-mirror`)
+- **Ansible collections:** `amazon.aws`, `community.aws`, `kubernetes.core`, `community.general`, `ansible.posix` (see `requirements.yml`)
 - **Secrets:** Pull secret at `~/.openshift/pull-secret` (or `PULL_SECRET_PATH`), SSH public key at `~/.ssh/id_rsa.pub`
 
 ## Playbook Tags
@@ -61,6 +65,8 @@ ansible-galaxy collection install -r requirements.yml
 # 2. Syntax check all playbooks
 ansible-playbook playbooks/deploy_cluster.yml --syntax-check
 ansible-playbook playbooks/destroy_cluster.yml --syntax-check
+ansible-playbook playbooks/install_rhoai.yml --syntax-check
+ansible-playbook playbooks/preflight.yml --syntax-check
 
 # 3. Run ansible-lint
 ansible-lint
@@ -162,3 +168,4 @@ Set **`csr_approver_emit_console_ingress_hints_on_install_failure: true`** to pr
 - **Add a new role:** Create `roles/<name>/` with `tasks/main.yml`, `defaults/main.yml`, `README.md`.
 - **Change node counts:** Edit `inventory/group_vars/all.yml` (`master_count`, `worker_count`, `gpu_worker_count`).
 - **Add a playbook tag:** Add `tags:` to the relevant role in `deploy_cluster.yml`.
+- **Install RHOAI (day-2):** Mirror with `scripts/mirror-rhoai.sh`, then `ansible-playbook playbooks/install_rhoai.yml` (see `docs/RHOAI-disconnected-install.md`).

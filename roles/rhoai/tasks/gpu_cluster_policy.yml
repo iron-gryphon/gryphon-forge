@@ -1,0 +1,74 @@
+---
+# Apply ClusterPolicy from GPU operator CSV alm-examples when missing
+
+- name: Check for existing ClusterPolicy
+  ansible.builtin.command:
+    cmd: "{{ rhoai_oc_cmd }} get clusterpolicy gpu-cluster-policy --kubeconfig={{ rhoai_kubeconfig }}"
+  register: rhoai_gpu_cp_get
+  changed_when: false
+  failed_when: false
+
+- name: Derive and apply ClusterPolicy from CSV alm-examples
+  when: rhoai_gpu_cp_get.rc != 0
+  block:
+    - name: Extract ClusterPolicy JSON from CSV
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          {{ rhoai_oc_cmd }} get csv -n nvidia-gpu-operator -o json --kubeconfig={{ rhoai_kubeconfig }}
+          | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          for item in data.get("items", []):
+              name = item.get("metadata", {}).get("name", "")
+              if "gpu-operator-certified" not in name:
+                  continue
+              examples = item.get("metadata", {}).get("annotations", {}).get("alm-examples", "[]")
+              try:
+                  parsed = json.loads(examples) if examples else []
+              except json.JSONDecodeError:
+                  continue
+              for ex in parsed:
+                  if ex.get("kind") == "ClusterPolicy":
+                      if "metadata" not in ex:
+                          ex["metadata"] = {}
+                      ex["metadata"]["name"] = "gpu-cluster-policy"
+                      json.dump(ex, sys.stdout)
+                      sys.exit(0)
+          # Fallback: empty spec ClusterPolicy (operator fills defaults)
+          json.dump({
+              "apiVersion": "nvidia.com/v1",
+              "kind": "ClusterPolicy",
+              "metadata": {"name": "gpu-cluster-policy"},
+              "spec": {}
+          }, sys.stdout)
+          sys.exit(0)
+          '
+      args:
+        executable: /bin/bash
+      register: rhoai_gpu_cp_json
+      changed_when: false
+      failed_when: rhoai_gpu_cp_json.rc != 0 or (rhoai_gpu_cp_json.stdout | default('') | length) == 0
+
+    - name: Stage ClusterPolicy tempfile
+      ansible.builtin.tempfile:
+        state: file
+        suffix: -gpu-cp.json
+      register: rhoai_gpu_cp_tmp
+
+    - name: Write ClusterPolicy JSON
+      ansible.builtin.copy:
+        dest: "{{ rhoai_gpu_cp_tmp.path }}"
+        mode: "0644"
+        content: "{{ rhoai_gpu_cp_json.stdout }}"
+
+    - name: Apply ClusterPolicy
+      ansible.builtin.command:
+        cmd: "{{ rhoai_oc_cmd }} apply --kubeconfig={{ rhoai_kubeconfig }} -f {{ rhoai_gpu_cp_tmp.path }}"
+      register: rhoai_gpu_cp_apply
+      changed_when: "'created' in rhoai_gpu_cp_apply.stdout or 'configured' in rhoai_gpu_cp_apply.stdout"
+
+    - name: Remove ClusterPolicy tempfile
+      ansible.builtin.file:
+        path: "{{ rhoai_gpu_cp_tmp.path }}"
+        state: absent

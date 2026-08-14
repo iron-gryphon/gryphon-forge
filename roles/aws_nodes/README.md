@@ -22,7 +22,8 @@ Provisions EC2 instances, internal Load Balancers (NLB/ALB), and Route53 DNS rec
 | `rhcos_ami_source_region` | Source region for AMI copy | `foundry_region` when empty |
 | `master_count` | Number of control plane nodes | 3 |
 | `worker_count` | Number of worker nodes | 3 |
-| `gpu_worker_count` | Number of GPU worker nodes | 1 |
+| `gpu_worker_count` | Number of GPU worker nodes | 3 |
+| `gpu_worker_instance_type` | GPU worker instance type (default `g6.4xlarge` for RHOAI) | `g6.4xlarge` |
 | `aws_nodes_lb_target_discovery_retries` | EC2 describe retries when registering NLB targets (`--tags load_balancers`) | 40 |
 | `aws_nodes_lb_target_discovery_delay` | Seconds between retries | 8 |
 | `aws_nodes_lb_prune_api_mcs_targets_enabled` | After API/MCS registration, run prune logic for `{{ cluster_name }}-api-tg` / `-mcs-tg` | `true` |

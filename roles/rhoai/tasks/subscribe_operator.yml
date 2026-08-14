@@ -1,0 +1,99 @@
+---
+# Subscribe to a single OLM package (expects rhoai_sub_* vars)
+
+- name: Resolve CatalogSource for {{ rhoai_sub_package }}
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get packagemanifest {{ rhoai_sub_package }}
+      -n openshift-marketplace
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.status.catalogSource}'
+  register: rhoai_sub_catalog_lookup
+  changed_when: false
+  failed_when: false
+
+- name: Fail when package is not in any CatalogSource
+  ansible.builtin.fail:
+    msg: >-
+      PackageManifest '{{ rhoai_sub_package }}' not found in openshift-marketplace.
+      Mirror the operator (scripts/mirror-rhoai.sh) and apply cluster-resources
+      (rhoai_apply_mirror_resources=true), or ensure the connected catalog is available.
+  when:
+    - rhoai_require_package_manifests | bool
+    - rhoai_sub_catalog_lookup.stdout | default('') | length == 0
+
+- name: Set catalog for subscription
+  ansible.builtin.set_fact:
+    rhoai_sub_catalog: "{{ rhoai_sub_catalog_lookup.stdout }}"
+
+- name: Stage subscription manifests for {{ rhoai_sub_package }}
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: "-sub-{{ rhoai_sub_package }}"
+  register: rhoai_sub_dir
+
+- name: Write namespace for {{ rhoai_sub_package }}
+  ansible.builtin.copy:
+    dest: "{{ rhoai_sub_dir.path }}/00-namespace.yml"
+    mode: "0644"
+    content: "{{ lookup('template', 'namespace.yml.j2') }}"
+
+- name: Check for existing OperatorGroup in {{ rhoai_sub_namespace }}
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get operatorgroup -n {{ rhoai_sub_namespace }}
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.items[*].metadata.name}'
+  register: rhoai_existing_ogs
+  changed_when: false
+  failed_when: false
+
+- name: Write OperatorGroup for {{ rhoai_sub_package }}
+  ansible.builtin.copy:
+    dest: "{{ rhoai_sub_dir.path }}/10-operatorgroup.yml"
+    mode: "0644"
+    content: "{{ lookup('template', 'operatorgroup.yml.j2') }}"
+  when: rhoai_existing_ogs.stdout | default('') | trim | length == 0
+
+- name: Write Subscription for {{ rhoai_sub_package }}
+  ansible.builtin.copy:
+    dest: "{{ rhoai_sub_dir.path }}/20-subscription.yml"
+    mode: "0644"
+    content: "{{ lookup('template', 'subscription.yml.j2') }}"
+
+- name: Apply Subscription resources for {{ rhoai_sub_package }}
+  ansible.builtin.command:
+    cmd: "{{ rhoai_oc_cmd }} apply --kubeconfig={{ rhoai_kubeconfig }} -f {{ rhoai_sub_dir.path }}"
+  register: rhoai_sub_apply
+  changed_when: "'created' in rhoai_sub_apply.stdout or 'configured' in rhoai_sub_apply.stdout"
+
+- name: Wait for installed CSV on Subscription {{ rhoai_sub_package }}
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get subscription {{ rhoai_sub_package }}
+      -n {{ rhoai_sub_namespace }}
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.status.installedCSV}'
+  register: rhoai_sub_installed_csv
+  until: rhoai_sub_installed_csv.stdout | length > 0
+  retries: "{{ ((rhoai_csv_timeout_seconds | int) / (rhoai_csv_retry_delay | int)) | int }}"
+  delay: "{{ rhoai_csv_retry_delay | int }}"
+  changed_when: false
+
+- name: Wait for CSV Succeeded
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get csv {{ rhoai_sub_installed_csv.stdout }}
+      -n {{ rhoai_sub_namespace }}
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.status.phase}'
+  register: rhoai_sub_csv_phase
+  until: rhoai_sub_csv_phase.stdout == 'Succeeded'
+  retries: "{{ ((rhoai_csv_timeout_seconds | int) / (rhoai_csv_retry_delay | int)) | int }}"
+  delay: "{{ rhoai_csv_retry_delay | int }}"
+  changed_when: false
+
+- name: Remove subscription staging directory
+  ansible.builtin.file:
+    path: "{{ rhoai_sub_dir.path }}"
+    state: absent

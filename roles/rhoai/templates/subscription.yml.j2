@@ -1,0 +1,14 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: {{ rhoai_sub_package }}
+  namespace: {{ rhoai_sub_namespace }}
+spec:
+  name: {{ rhoai_sub_package }}
+  channel: {{ rhoai_sub_channel }}
+  source: {{ rhoai_sub_catalog }}
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+{% if rhoai_sub_starting_csv | default('') | length > 0 %}
+  startingCSV: {{ rhoai_sub_starting_csv }}
+{% endif %}

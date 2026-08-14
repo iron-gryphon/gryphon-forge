@@ -120,6 +120,28 @@
         - preflight_ocp_cluster_name | default('') | length > 0
         - preflight_ocp_base_domain | default('') | length > 0
 
+    - name: Resolve Route53 credential environment for preflight
+      ansible.builtin.set_fact:
+        preflight_r53_env: >-
+          {{
+            {'AWS_PROFILE': ''}
+            if (
+              (lookup('env', 'AWS_ACCESS_KEY_ID', default='') | length > 0)
+              or (lookup('env', 'AWS_ACCESS_KEY', default='') | length > 0)
+              or (lookup('env', 'AWS_SECRET_ACCESS_KEY', default='') | length > 0)
+              or (lookup('env', 'AWS_SESSION_TOKEN', default='') | length > 0)
+            )
+            else {}
+          }}
+
+    - name: Debug which AWS credential source preflight Route53 will use
+      ansible.builtin.debug:
+        msg: >-
+          Route53 GetHostedZone using
+          {{ 'explicit AWS_* env credentials (AWS_PROFILE cleared for this call)'
+             if (preflight_r53_env | length > 0)
+             else 'default credential chain (profile / instance role / shared config)' }}.
+
     - name: Fetch Route53 private zone details (VPC association for Vault resolver)
       amazon.aws.route53_info:
         query: hosted_zone
@@ -127,6 +149,9 @@
         hosted_zone_id: "{{ preflight_zone_id }}"
         region: "{{ preflight_region }}"
       register: preflight_route53_zone
+      # amazon.aws rejects profile + explicit credentials in the same call. A shell may have both
+      # AWS_PROFILE (e.g. default) and AWS_* key/session env vars; clear profile for this task only.
+      environment: "{{ preflight_r53_env }}"
 
     - name: Derive VPC IDs associated with internal hosted zone
       ansible.builtin.set_fact:

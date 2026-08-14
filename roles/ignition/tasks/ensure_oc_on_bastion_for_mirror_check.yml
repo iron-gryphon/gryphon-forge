@@ -1,16 +1,30 @@
 ---
 # Ensure Linux oc exists under bastion_install_dir/bin for mirror digest preflight (client tarball only).
-- name: Check for Linux oc binary on bastion
-  ansible.builtin.stat:
-    path: "{{ bastion_install_dir }}/bin/oc"
-  register: ignition_oc_on_bastion_stat
+# Rsync excludes bin/; this path still catches a missing binary or a leftover non-ELF (e.g. pre-exclude Mach-O) copy.
+- name: Check whether bastion oc is missing or not Linux ELF
+  ansible.builtin.shell: |
+    set -euo pipefail
+    o="{{ bastion_install_dir }}/bin/oc"
+    if [ ! -f "$o" ]; then
+      exit 2
+    fi
+    h=$(head -c 4 "$o" | od -An -t x1 | tr -d '[:space:]')
+    case "$h" in 7f454c46*) exit 0;; *) exit 1;; esac
+  register: ignition_oc_on_bastion_elf_check
+  changed_when: false
+  # 0=ELF, 1=not ELF, 2=missing — any other rc is unexpected (permissions, missing od, etc.)
+  failed_when: ignition_oc_on_bastion_elf_check.rc not in [0, 1, 2]
+
+- name: Set fact — fetch Linux oc for mirror check when missing or wrong format (e.g. Darwin copy)
+  ansible.builtin.set_fact:
+    ignition_oc_on_bastion_needs_fetch: "{{ ignition_oc_on_bastion_elf_check.rc | int != 0 }}"
 
 - name: Ensure temp directory for OCP client download on bastion
   ansible.builtin.file:
     path: "{{ ignition_mirror_check_bastion_tmp }}"
     state: directory
     mode: "0700"
-  when: not ignition_oc_on_bastion_stat.stat.exists | default(false)
+  when: ignition_oc_on_bastion_needs_fetch | bool
 
 - name: Download openshift-client to bastion for mirror check
   ansible.builtin.get_url:
@@ -18,21 +32,21 @@
     dest: "{{ ignition_mirror_check_bastion_tmp }}/openshift-client-linux.tar.gz"
     mode: "0644"
     validate_certs: "{{ ignition_ocp_mirror_validate_certs | default(true) | bool }}"
-  when: not ignition_oc_on_bastion_stat.stat.exists | default(false)
+  when: ignition_oc_on_bastion_needs_fetch | bool
 
 - name: Extract openshift-client on bastion
   ansible.builtin.unarchive:
     src: "{{ ignition_mirror_check_bastion_tmp }}/openshift-client-linux.tar.gz"
     dest: "{{ ignition_mirror_check_bastion_tmp }}"
     remote_src: true
-  when: not ignition_oc_on_bastion_stat.stat.exists | default(false)
+  when: ignition_oc_on_bastion_needs_fetch | bool
 
 - name: Ensure bastion bin directory exists
   ansible.builtin.file:
     path: "{{ bastion_install_dir }}/bin"
     state: directory
     mode: "0755"
-  when: not ignition_oc_on_bastion_stat.stat.exists | default(false)
+  when: ignition_oc_on_bastion_needs_fetch | bool
 
 - name: Install oc binary on bastion for mirror check
   ansible.builtin.shell: |
@@ -40,11 +54,11 @@
     BIN=$(find "{{ ignition_mirror_check_bastion_tmp }}" -name 'oc' -type f 2>/dev/null | head -1)
     cp "$BIN" "{{ bastion_install_dir }}/bin/oc"
     chmod 0755 "{{ bastion_install_dir }}/bin/oc"
-  when: not ignition_oc_on_bastion_stat.stat.exists | default(false)
+  when: ignition_oc_on_bastion_needs_fetch | bool
   changed_when: true
 
 - name: Remove mirror check temp directory on bastion
   ansible.builtin.file:
     path: "{{ ignition_mirror_check_bastion_tmp }}"
     state: absent
-  when: not ignition_oc_on_bastion_stat.stat.exists | default(false)
+  when: ignition_oc_on_bastion_needs_fetch | bool

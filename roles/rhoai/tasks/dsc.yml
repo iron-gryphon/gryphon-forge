@@ -1,0 +1,142 @@
+---
+# Apply DSCInitialization (wait Ready), then DataScienceCluster
+
+- name: Resolve mirror CA PEM for DSCI
+  ansible.builtin.set_fact:
+    rhoai_dsci_ca_bundle: "{{ rhoai_mirror_ca_pem | default('', true) | trim }}"
+
+- name: Load mirror CA from file when provided
+  when:
+    - rhoai_mirror_ca_file | default('') | length > 0
+  block:
+    - name: Stat mirror CA file
+      ansible.builtin.stat:
+        path: "{{ rhoai_mirror_ca_file | expanduser }}"
+      register: rhoai_mirror_ca_stat
+
+    - name: Read mirror CA file
+      ansible.builtin.slurp:
+        src: "{{ rhoai_mirror_ca_file | expanduser }}"
+      register: rhoai_mirror_ca_slurp
+      when: rhoai_mirror_ca_stat.stat.exists | default(false)
+
+    - name: Set CA bundle from file
+      ansible.builtin.set_fact:
+        rhoai_dsci_ca_bundle: "{{ rhoai_mirror_ca_slurp.content | b64decode | trim }}"
+      when: rhoai_mirror_ca_slurp is defined and rhoai_mirror_ca_slurp.content is defined
+
+- name: Warn when DSCI customCABundle is empty (disconnected workbenches may fail TLS to mirror)
+  ansible.builtin.debug:
+    msg: >-
+      No mirror CA PEM configured (rhoai_mirror_ca_pem / rhoai_mirror_ca_file /
+      mirror_registry_additional_trust_bundle). DSCI trustedCABundle.customCABundle
+      will be empty.
+  when: rhoai_dsci_ca_bundle | default('') | length == 0
+
+- name: Wait for RHOAI conversion webhook Service
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get svc rhods-operator-service
+      -n {{ rhoai_operator_namespace }}
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.metadata.name}'
+  register: rhoai_webhook_svc
+  until: rhoai_webhook_svc.stdout | length > 0
+  retries: 60
+  delay: 5
+  changed_when: false
+
+- name: Wait for RHOAI conversion webhook endpoints
+  ansible.builtin.command:
+    cmd: >-
+      {{ rhoai_oc_cmd }} get endpoints rhods-operator-service
+      -n {{ rhoai_operator_namespace }}
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.subsets[*].addresses[*].ip}'
+  register: rhoai_webhook_eps
+  until: rhoai_webhook_eps.stdout | length > 0
+  retries: 60
+  delay: 5
+  changed_when: false
+
+- name: Stage DSCI manifest
+  ansible.builtin.tempfile:
+    state: file
+    suffix: -dsci.yml
+  register: rhoai_dsci_tmp
+
+- name: Write DSCI manifest
+  ansible.builtin.copy:
+    dest: "{{ rhoai_dsci_tmp.path }}"
+    mode: "0644"
+    content: "{{ lookup('template', 'dsci.yml.j2') }}"
+
+- name: Apply DSCInitialization
+  ansible.builtin.command:
+    cmd: "{{ rhoai_oc_cmd }} apply --kubeconfig={{ rhoai_kubeconfig }} -f {{ rhoai_dsci_tmp.path }}"
+  register: rhoai_dsci_apply
+  changed_when: "'created' in rhoai_dsci_apply.stdout or 'configured' in rhoai_dsci_apply.stdout"
+
+- name: Wait for DSCInitialization Ready (phase or condition)
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      phase=$({{ rhoai_oc_cmd }} get dscinitialization {{ rhoai_dsci_name }}
+      --kubeconfig={{ rhoai_kubeconfig }} -o jsonpath='{.status.phase}' 2>/dev/null || true);
+      cond=$({{ rhoai_oc_cmd }} get dscinitialization {{ rhoai_dsci_name }}
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true);
+      if [ "$phase" = "Ready" ] || [ "$cond" = "True" ]; then echo Ready; else echo "$phase|$cond"; exit 1; fi
+  args:
+    executable: /bin/bash
+  register: rhoai_dsci_ready
+  until: rhoai_dsci_ready.stdout == 'Ready'
+  retries: "{{ ((rhoai_dsci_timeout_seconds | int) / 20) | int }}"
+  delay: 20
+  changed_when: false
+
+- name: Remove DSCI tempfile
+  ansible.builtin.file:
+    path: "{{ rhoai_dsci_tmp.path }}"
+    state: absent
+
+- name: Stage DSC manifest
+  ansible.builtin.tempfile:
+    state: file
+    suffix: -dsc.yml
+  register: rhoai_dsc_tmp
+
+- name: Write DSC manifest
+  ansible.builtin.copy:
+    dest: "{{ rhoai_dsc_tmp.path }}"
+    mode: "0644"
+    content: "{{ lookup('template', 'dsc.yml.j2') }}"
+
+- name: Apply DataScienceCluster
+  ansible.builtin.command:
+    cmd: "{{ rhoai_oc_cmd }} apply --kubeconfig={{ rhoai_kubeconfig }} -f {{ rhoai_dsc_tmp.path }}"
+  register: rhoai_dsc_apply
+  changed_when: "'created' in rhoai_dsc_apply.stdout or 'configured' in rhoai_dsc_apply.stdout"
+
+- name: Wait for DataScienceCluster Ready (phase or condition)
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      phase=$({{ rhoai_oc_cmd }} get datasciencecluster {{ rhoai_dsc_name }}
+      --kubeconfig={{ rhoai_kubeconfig }} -o jsonpath='{.status.phase}' 2>/dev/null || true);
+      cond=$({{ rhoai_oc_cmd }} get datasciencecluster {{ rhoai_dsc_name }}
+      --kubeconfig={{ rhoai_kubeconfig }}
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true);
+      if [ "$phase" = "Ready" ] || [ "$cond" = "True" ]; then echo Ready; else echo "$phase|$cond"; exit 1; fi
+  args:
+    executable: /bin/bash
+  register: rhoai_dsc_ready
+  until: rhoai_dsc_ready.stdout == 'Ready'
+  retries: "{{ ((rhoai_dsc_timeout_seconds | int) / 30) | int }}"
+  delay: 30
+  changed_when: false
+
+- name: Remove DSC tempfile
+  ansible.builtin.file:
+    path: "{{ rhoai_dsc_tmp.path }}"
+    state: absent

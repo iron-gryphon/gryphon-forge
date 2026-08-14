@@ -1,0 +1,75 @@
+---
+# Create NodeFeatureDiscovery instance after NFD CSV is Succeeded
+
+- name: Resolve NFD operand image from CSV relatedImages
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      {{ rhoai_oc_cmd }} get csv -n openshift-nfd -o json --kubeconfig={{ rhoai_kubeconfig }}
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); imgs=[];
+      items=[i for i in d.get("items",[]) if str(i.get("metadata",{}).get("name","")).startswith("nfd")];
+      for item in items:
+        for r in (item.get("spec",{}).get("relatedImages") or []):
+          img=r.get("image") or "";
+          if img: imgs.append(img);
+      # Prefer the operand image, not the operator controller image
+      pick=next((i for i in imgs if "ose-node-feature-discovery" in i and "operator" not in i), "");
+      if not pick:
+        pick=next((i for i in imgs if "node-feature-discovery" in i and "operator" not in i), "");
+      if not pick:
+        pick=next((i for i in imgs if "nfd" in i.lower() and "operator" not in i), "");
+      print(pick)'
+  args:
+    executable: /bin/bash
+  register: rhoai_nfd_image
+  changed_when: false
+  failed_when: false
+
+- name: Skip NFD instance when operand image unresolved
+  ansible.builtin.debug:
+    msg: >-
+      Could not resolve NFD operand image from CSV; create NodeFeatureDiscovery manually.
+  when: rhoai_nfd_image.stdout | default('') | length == 0
+
+- name: Apply NodeFeatureDiscovery instance
+  when: rhoai_nfd_image.stdout | default('') | length > 0
+  block:
+    - name: Stage NFD instance manifest
+      ansible.builtin.tempfile:
+        state: file
+        suffix: -nfd.yml
+      register: rhoai_nfd_tmp
+
+    - name: Write NFD instance manifest
+      ansible.builtin.copy:
+        dest: "{{ rhoai_nfd_tmp.path }}"
+        mode: "0644"
+        content: |
+          apiVersion: nfd.openshift.io/v1
+          kind: NodeFeatureDiscovery
+          metadata:
+            name: nfd-instance
+            namespace: openshift-nfd
+          spec:
+            operand:
+              image: {{ rhoai_nfd_image.stdout }}
+              servicePort: 12000
+            workerConfig:
+              configData: |
+                core:
+                  sleepInterval: 60s
+                sources:
+                  pci:
+                    deviceClassWhitelist: ["0200", "03"]
+                    deviceLabelFields: ["vendor"]
+
+    - name: Apply NFD instance
+      ansible.builtin.command:
+        cmd: "{{ rhoai_oc_cmd }} apply --kubeconfig={{ rhoai_kubeconfig }} -f {{ rhoai_nfd_tmp.path }}"
+      register: rhoai_nfd_apply
+      changed_when: "'created' in rhoai_nfd_apply.stdout or 'configured' in rhoai_nfd_apply.stdout"
+
+    - name: Remove NFD tempfile
+      ansible.builtin.file:
+        path: "{{ rhoai_nfd_tmp.path }}"
+        state: absent

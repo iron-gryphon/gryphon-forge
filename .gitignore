@@ -31,3 +31,4 @@ venv/
 *.swp
 *.swo
 *~
+.idea/
